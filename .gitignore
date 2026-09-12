@@ -1,0 +1,23 @@
+# Build
+bin/
+dist/
+*.exe
+
+# Go
+*.test
+*.out
+coverage.txt
+
+# Node
+node_modules/
+*.tsbuildinfo
+
+# Env / secrets
+.env
+.env.*
+!.env.example
+
+# Runtime
+*.log
+data/
+tmp/
