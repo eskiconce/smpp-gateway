@@ -1,0 +1,4 @@
+DROP TABLE IF EXISTS messages;
+DROP TABLE IF EXISTS routing_rules;
+DROP TABLE IF EXISTS connectors;
+DROP TABLE IF EXISTS tenants;
