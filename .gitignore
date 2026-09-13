@@ -20,4 +20,4 @@ node_modules/
 # Runtime
 *.log
 data/
-tmp/
+tmp/.worktrees/
