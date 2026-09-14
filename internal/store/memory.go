@@ -59,3 +59,25 @@ func (r *MemoryRepo) GetMessage(_ context.Context, id string) (*Message, error) 
 	cp := *m
 	return &cp, nil
 }
+
+func (r *MemoryRepo) IncrementTry(_ context.Context, id string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	m, ok := r.msgs[id]
+	if !ok {
+		return ErrNotFound
+	}
+	m.TryCount++
+	return nil
+}
+
+func (r *MemoryRepo) SetConnector(_ context.Context, id string, connectorID int) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	m, ok := r.msgs[id]
+	if !ok {
+		return ErrNotFound
+	}
+	m.ConnectorID = connectorID
+	return nil
+}

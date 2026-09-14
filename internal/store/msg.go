@@ -13,6 +13,7 @@ type Message struct {
 	Text        string
 	Segments    int
 	ConnectorID int
+	RouteID     int
 	State       string
 	TryCount    int
 	SmscMsgid   string
@@ -24,4 +25,6 @@ type MessageRepo interface {
 	UpdateState(ctx context.Context, id, state string) error
 	SetSmscMsgid(ctx context.Context, id, smscMsgid string) error
 	GetMessage(ctx context.Context, id string) (*Message, error)
+	IncrementTry(ctx context.Context, id string) error
+	SetConnector(ctx context.Context, id string, connectorID int) error
 }

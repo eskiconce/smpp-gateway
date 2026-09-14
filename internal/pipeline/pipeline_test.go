@@ -6,13 +6,14 @@ import (
 	"time"
 
 	"github.com/eskiconce/smpp-gateway/internal/queue"
+	"github.com/eskiconce/smpp-gateway/internal/router"
 	"github.com/eskiconce/smpp-gateway/internal/store"
 )
 
 type testRouter struct{ id int }
 
-func (t *testRouter) Route(ctx context.Context, tenantID, msisdn, tag string) (int, error) {
-	return t.id, nil
+func (t *testRouter) Route(_ context.Context, _ router.RouteInput) (router.RouteResult, error) {
+	return router.RouteResult{RuleID: 1, Connectors: []int{t.id}}, nil
 }
 
 func TestSubmitEndToEndPipeline(t *testing.T) {

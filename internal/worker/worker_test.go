@@ -9,6 +9,7 @@ import (
 
 	"github.com/eskiconce/smpp-gateway/internal/pipeline"
 	"github.com/eskiconce/smpp-gateway/internal/queue"
+	"github.com/eskiconce/smpp-gateway/internal/router"
 	"github.com/eskiconce/smpp-gateway/internal/session"
 	"github.com/eskiconce/smpp-gateway/internal/smscsim"
 	"github.com/eskiconce/smpp-gateway/internal/store"
@@ -66,6 +67,6 @@ func TestWorkerSendsAndTracksDLR(t *testing.T) {
 
 type fixedRouter struct{ id int }
 
-func (f *fixedRouter) Route(ctx context.Context, tenantID, msisdn, tag string) (int, error) {
-	return f.id, nil
+func (f *fixedRouter) Route(_ context.Context, _ router.RouteInput) (router.RouteResult, error) {
+	return router.RouteResult{RuleID: 1, Connectors: []int{f.id}}, nil
 }

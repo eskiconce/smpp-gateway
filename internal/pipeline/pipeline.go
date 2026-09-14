@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/eskiconce/smpp-gateway/internal/queue"
+	"github.com/eskiconce/smpp-gateway/internal/router"
 	"github.com/eskiconce/smpp-gateway/internal/smpp"
 	"github.com/eskiconce/smpp-gateway/internal/store"
 	"github.com/google/uuid"
@@ -23,7 +24,7 @@ type Outgoing struct {
 }
 
 type Router interface {
-	Route(ctx context.Context, tenantID, msisdn, routingTag string) (int, error)
+	Route(ctx context.Context, in router.RouteInput) (router.RouteResult, error)
 }
 
 type Pipeline struct {
@@ -47,16 +48,22 @@ func (p *Pipeline) Submit(ctx context.Context, out Outgoing) (string, int, error
 		return "", 0, err
 	}
 
-	connectorID, err := p.r.Route(ctx, out.TenantID, out.Msisdn, out.RoutingTag)
+	res, err := p.r.Route(ctx, router.RouteInput{
+		TenantID:   out.TenantID,
+		SourceAddr: out.SourceAddr,
+		Msisdn:     out.Msisdn,
+		RoutingTag: out.RoutingTag,
+	})
 	if err != nil {
 		return "", 0, err
 	}
 
+	connectorID := res.Connectors[0]
 	msgID := uuid.NewString()
 	msg := &store.Message{
 		ID: msgID, TenantID: out.TenantID, SourceAddr: out.SourceAddr,
 		Msisdn: out.Msisdn, Text: out.Text, Segments: segments,
-		ConnectorID: connectorID, State: "buffered", CreatedAt: time.Now(),
+		ConnectorID: connectorID, RouteID: res.RuleID, State: "buffered", CreatedAt: time.Now(),
 	}
 	if err := p.repo.CreateMessage(ctx, msg); err != nil {
 		return "", 0, err

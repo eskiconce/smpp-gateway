@@ -27,8 +27,9 @@ func apiConfig() config.Config { return config.Config{} }
 type e2eRules struct{}
 
 func (e2eRules) ListRoutingRules(context.Context) ([]router.Rule, error) {
-	return []router.Rule{{Priority: 1, Prefix: "569", ConnectorID: 1}}, nil
+	return []router.Rule{{ID: 1, Priority: 1, Prefix: "569", ConnectorID: 1}}, nil
 }
+func (e2eRules) ListGroups(context.Context) ([]router.Group, error) { return nil, nil }
 
 func TestE2EHTTPSubmitToDelivered(t *testing.T) {
 	sim := smscsim.New(smscsim.Config{

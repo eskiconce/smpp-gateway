@@ -67,3 +67,6 @@ type stubRuleStore struct{}
 func (stubRuleStore) ListRoutingRules(_ context.Context) ([]router.Rule, error) {
 	return nil, nil
 }
+func (stubRuleStore) ListGroups(_ context.Context) ([]router.Group, error) {
+	return nil, nil
+}
