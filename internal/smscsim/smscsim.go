@@ -16,11 +16,13 @@ type Handler struct {
 }
 
 type Config struct {
-	Addr      string
-	SystemID  string
-	Password  string
-	EnableDLR bool
-	Handler   Handler
+	Addr                string
+	SystemID            string
+	Password            string
+	EnableDLR           bool
+	DropOnSubmit        bool
+	RespondSubmitStatus smpp.CommandStatus
+	Handler             Handler
 }
 
 type Server struct {
@@ -94,6 +96,10 @@ func (s *Server) handleConn(conn net.Conn) {
 				writePDU(conn, smpp.Encode(smpp.NewSubmitSMResp(p.Header.Seq, smpp.ESME_RBINDFAIL, "")))
 				return
 			}
+			if s.cfg.DropOnSubmit {
+				conn.Close()
+				return
+			}
 			msgid := MsgidFor(p.Header.Seq)
 			if s.cfg.Handler.OnSubmit != nil {
 				if err := s.cfg.Handler.OnSubmit(msgid, p.Header.Seq); err != nil {
@@ -101,10 +107,14 @@ func (s *Server) handleConn(conn net.Conn) {
 					return
 				}
 			}
-			if err := writePDU(conn, smpp.Encode(smpp.NewSubmitSMResp(p.Header.Seq, smpp.ESME_ROK, msgid))); err != nil {
+			status := s.cfg.RespondSubmitStatus
+			if status == 0 {
+				status = smpp.ESME_ROK
+			}
+			if err := writePDU(conn, smpp.Encode(smpp.NewSubmitSMResp(p.Header.Seq, status, msgid))); err != nil {
 				return
 			}
-			if s.cfg.EnableDLR {
+			if status == smpp.ESME_ROK && s.cfg.EnableDLR {
 				dlr := "id:" + msgid + " sub:001 dlvrd:001 submit date:2609121230 done date:2609121231 stat:DELIVRD err:000 text:"
 				if err := writePDU(conn, smpp.Encode(smpp.NewDeliverSM(s.nextSeq(), s.cfg.SystemID, "", dlr))); err != nil {
 					return

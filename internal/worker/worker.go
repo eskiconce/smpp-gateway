@@ -2,7 +2,7 @@ package worker
 
 import (
 	"context"
-	"sync"
+	"time"
 
 	"github.com/eskiconce/smpp-gateway/internal/queue"
 	"github.com/eskiconce/smpp-gateway/internal/smpp"
@@ -14,59 +14,73 @@ type Sender interface {
 }
 
 type Worker struct {
-	q    queue.Queue
-	repo store.MessageRepo
-	sess Sender
-
-	mu      sync.Mutex
-	pending map[uint32]string // seq -> messageID
-	dlr     map[string]string // smscMsgid -> messageID
+	q       queue.Queue
+	repo    store.MessageRepo
+	sess    Sender
+	pending map[uint32]queue.Item
+	dlr     map[string]string
+	backoff func(try int) time.Duration
 }
 
-func NewWorker(q queue.Queue, repo store.MessageRepo) *Worker {
-	return &Worker{q: q, repo: repo, pending: map[uint32]string{}, dlr: map[string]string{}}
+type Option func(*Worker)
+
+func WithBackoff(f func(try int) time.Duration) Option {
+	return func(w *Worker) { w.backoff = f }
+}
+
+func NewWorker(q queue.Queue, repo store.MessageRepo, opts ...Option) *Worker {
+	w := &Worker{
+		q: q, repo: repo,
+		pending: map[uint32]queue.Item{},
+		dlr:     map[string]string{},
+		backoff: defaultBackoff,
+	}
+	for _, o := range opts {
+		o(w)
+	}
+	return w
+}
+
+func defaultBackoff(try int) time.Duration {
+	d := 500 * time.Millisecond << uint(try)
+	if d > 30*time.Second {
+		return 30 * time.Second
+	}
+	return d
 }
 
 func (w *Worker) SetSession(s Sender) { w.sess = s }
 
 func (w *Worker) Handle(ctx context.Context, it queue.Item) error {
+	w.repo.IncrementTry(ctx, it.ID)
+	w.repo.SetConnector(ctx, it.ID, it.ConnectorID)
 	seq, err := w.sess.Submit(it.Msisdn, it.Text, 1)
 	if err != nil {
-		w.repo.UpdateState(ctx, it.ID, "failed")
+		w.fallback(it, true)
 		return nil
 	}
-	w.mu.Lock()
-	w.pending[seq] = it.ID
-	w.mu.Unlock()
+	w.pending[seq] = it
 	return nil
 }
 
-// OnSubmitResp implementa session.Handler.
 func (w *Worker) OnSubmitResp(seq uint32, status smpp.CommandStatus, msgid string) {
-	w.mu.Lock()
-	id, ok := w.pending[seq]
+	it, ok := w.pending[seq]
 	if !ok {
-		w.mu.Unlock()
 		return
 	}
 	delete(w.pending, seq)
-	w.mu.Unlock()
 	ctx := context.Background()
 	if status != smpp.ESME_ROK {
-		w.repo.UpdateState(ctx, id, "rejected")
+		w.repo.SetSmscMsgid(ctx, it.ID, msgid)
+		w.fallback(it, false)
 		return
 	}
-	w.repo.SetSmscMsgid(ctx, id, msgid)
-	w.mu.Lock()
-	w.dlr[msgid] = id // cache en caliente; la persistencia real llega en M3
-	w.mu.Unlock()
+	w.repo.SetSmscMsgid(ctx, it.ID, msgid)
+	w.dlr[msgid] = it.ID
 }
 
-// OnDLR implementa session.Handler.
 func (w *Worker) OnDLR(msgid, stat string) {
-	w.mu.Lock()
 	id, ok := w.dlr[msgid]
-	w.mu.Unlock()
 	if !ok {
 		return
 	}
@@ -75,4 +89,26 @@ func (w *Worker) OnDLR(msgid, stat string) {
 		state = "undeliv"
 	}
 	w.repo.UpdateState(context.Background(), id, state)
+}
+
+func (w *Worker) fallback(it queue.Item, transportErr bool) {
+	next := it.Try + 1
+	if next >= len(it.Candidates) {
+		state := "undeliv"
+		if !transportErr {
+			state = "rejected"
+		}
+		w.repo.UpdateState(context.Background(), it.ID, state)
+		return
+	}
+	nxt := it
+	nxt.ConnectorID = it.Candidates[next]
+	nxt.Try = next
+	delay := w.backoff(it.Try)
+	go func() {
+		if delay > 0 {
+			time.Sleep(delay)
+		}
+		w.q.Enqueue(context.Background(), queue.Key(nxt.ConnectorID, nxt.Priority), nxt)
+	}()
 }
