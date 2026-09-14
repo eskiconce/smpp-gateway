@@ -5,9 +5,11 @@ import (
 	"math/rand"
 	"net"
 	"strconv"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/eskiconce/smpp-gateway/internal/dlr"
 	"github.com/eskiconce/smpp-gateway/internal/pipeline"
 	"github.com/eskiconce/smpp-gateway/internal/queue"
 	"github.com/eskiconce/smpp-gateway/internal/router"
@@ -18,6 +20,24 @@ import (
 )
 
 func noBackoff(int) time.Duration { return 0 }
+
+type recNotifier struct {
+	mu  sync.Mutex
+	evs []dlr.Event
+}
+
+func (r *recNotifier) Notify(_ context.Context, ev dlr.Event) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.evs = append(r.evs, ev)
+	return nil
+}
+
+func (r *recNotifier) count() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return len(r.evs)
+}
 
 func portOf2(addr string) int {
 	_, portStr, err := net.SplitHostPort(addr)
@@ -41,6 +61,28 @@ func dialSess(t *testing.T, h session.Handler, simAddr string) *session.Session 
 	return s
 }
 
+func newProcWorker(t *testing.T, q queue.Queue, repo store.MessageRepo) (*Worker, *recNotifier, *dlr.Processor) {
+	t.Helper()
+	n := &recNotifier{}
+	proc := dlr.NewProcessor(dlr.NewMemCache(), repo, n)
+	return NewWorker(q, repo, WithBackoff(noBackoff), WithDLR(proc)), n, proc
+}
+
+func waitState(t *testing.T, repo store.MessageRepo, id, want string) *store.Message {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		m, err := repo.GetMessage(context.Background(), id)
+		if err == nil && m != nil && m.State == want {
+			return m
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	m, _ := repo.GetMessage(context.Background(), id)
+	t.Fatalf("no llego a %s (state=%s)", want, m.State)
+	return nil
+}
+
 func TestWorkerDeliveredHappyPath(t *testing.T) {
 	sim := smscsim.New(smscsim.Config{Addr: "127.0.0.1:0", SystemID: "esp", Password: "secreto", EnableDLR: true})
 	if err := sim.Start(); err != nil {
@@ -50,7 +92,7 @@ func TestWorkerDeliveredHappyPath(t *testing.T) {
 
 	repo := store.NewMemory()
 	q := queue.NewMemory()
-	w := NewWorker(q, repo, WithBackoff(noBackoff))
+	w, n, _ := newProcWorker(t, q, repo)
 	sess := dialSess(t, w, sim.Addr())
 	w.SetSession(sess)
 
@@ -65,15 +107,80 @@ func TestWorkerDeliveredHappyPath(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	deadline := time.Now().Add(3 * time.Second)
-	for time.Now().Before(deadline) {
-		m, _ := repo.GetMessage(ctx, msgID)
-		if m != nil && m.State == "delivered" {
-			return
-		}
-		time.Sleep(10 * time.Millisecond)
+
+	m := waitState(t, repo, msgID, "delivered")
+	if m.SmscMsgid == "" {
+		t.Fatal("sin smsc_msgid persistido")
 	}
-	t.Fatal("no llego a delivered")
+	deadline := time.Now().Add(time.Second)
+	for n.count() == 0 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if n.count() != 1 || n.evs[0].State != "delivered" {
+		t.Fatalf("notificador: %d %+v", n.count(), n.evs)
+	}
+}
+
+func TestWorkerDLRUndeliv(t *testing.T) {
+	sim := smscsim.New(smscsim.Config{Addr: "127.0.0.1:0", SystemID: "esp", Password: "secreto",
+		EnableDLR: true, DLRStatus: "UNDELIV"})
+	if err := sim.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer sim.Close()
+
+	repo := store.NewMemory()
+	q := queue.NewMemory()
+	w, n, _ := newProcWorker(t, q, repo)
+	w.SetSession(dialSess(t, w, sim.Addr()))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	go q.Consume(ctx, queue.Key(1, 0), "g", func(it queue.Item) error { return w.Handle(ctx, it) })
+
+	p := pipeline.NewPipeline(repo, q, &fixedRouter{ids: []int{1}})
+	msgID, _, err := p.Submit(ctx, pipeline.Outgoing{
+		TenantID: "t1", SourceAddr: "shield", Msisdn: "569123", Text: "hola", Priority: 0,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	waitState(t, repo, msgID, "undeliv")
+	deadline := time.Now().Add(time.Second)
+	for n.count() == 0 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if n.count() != 1 || n.evs[0].State != "undeliv" {
+		t.Fatalf("notificador: %d %+v", n.count(), n.evs)
+	}
+}
+
+func TestWorkerDLRExpired(t *testing.T) {
+	sim := smscsim.New(smscsim.Config{Addr: "127.0.0.1:0", SystemID: "esp", Password: "secreto",
+		EnableDLR: true, DLRStatus: "EXPIRED"})
+	if err := sim.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer sim.Close()
+
+	repo := store.NewMemory()
+	q := queue.NewMemory()
+	w, _, _ := newProcWorker(t, q, repo)
+	w.SetSession(dialSess(t, w, sim.Addr()))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	go q.Consume(ctx, queue.Key(1, 0), "g", func(it queue.Item) error { return w.Handle(ctx, it) })
+
+	p := pipeline.NewPipeline(repo, q, &fixedRouter{ids: []int{1}})
+	msgID, _, err := p.Submit(ctx, pipeline.Outgoing{
+		TenantID: "t1", SourceAddr: "shield", Msisdn: "569123", Text: "hola", Priority: 0,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitState(t, repo, msgID, "expired")
 }
 
 func TestWorkerFallbackOnReject(t *testing.T) {
@@ -92,9 +199,9 @@ func TestWorkerFallbackOnReject(t *testing.T) {
 	repo := store.NewMemory()
 	q := queue.NewMemory()
 
-	wA := NewWorker(q, repo, WithBackoff(noBackoff))
+	wA, _, _ := newProcWorker(t, q, repo)
 	wA.SetSession(dialSess(t, wA, simA.Addr()))
-	wB := NewWorker(q, repo, WithBackoff(noBackoff))
+	wB, _, _ := newProcWorker(t, q, repo)
 	wB.SetSession(dialSess(t, wB, simB.Addr()))
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -115,24 +222,10 @@ func TestWorkerFallbackOnReject(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	deadline := time.Now().Add(3 * time.Second)
-	for time.Now().Before(deadline) {
-		m, err := repo.GetMessage(ctx, msgID)
-		if err != nil {
-			continue
-		}
-		if m.State == "delivered" {
-			if m.ConnectorID != 2 {
-				t.Fatalf("conector final=%d, esperaba 2", m.ConnectorID)
-			}
-			if m.TryCount != 2 {
-				t.Fatalf("try_count=%d, esperaba 2 (reintento)", m.TryCount)
-			}
-			return
-		}
-		time.Sleep(10 * time.Millisecond)
+	m := waitState(t, repo, msgID, "delivered")
+	if m.ConnectorID != 2 || m.TryCount != 2 {
+		t.Fatalf("conector=%d try=%d", m.ConnectorID, m.TryCount)
 	}
-	t.Fatal("fallback no entrego por B")
 }
 
 func TestWorkerExhaustRejected(t *testing.T) {
@@ -145,7 +238,7 @@ func TestWorkerExhaustRejected(t *testing.T) {
 
 	repo := store.NewMemory()
 	q := queue.NewMemory()
-	wA := NewWorker(q, repo, WithBackoff(noBackoff))
+	wA, _, _ := newProcWorker(t, q, repo)
 	wA.SetSession(dialSess(t, wA, simA.Addr()))
 
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
@@ -159,16 +252,7 @@ func TestWorkerExhaustRejected(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		m, _ := repo.GetMessage(ctx, msgID)
-		if m != nil && m.State == "rejected" {
-			return
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	t.Fatal("no quedo rejected")
+	waitState(t, repo, msgID, "rejected")
 }
 
 func TestWorkerFallbackOnTransport(t *testing.T) {
@@ -181,14 +265,14 @@ func TestWorkerFallbackOnTransport(t *testing.T) {
 	repo := store.NewMemory()
 	q := queue.NewMemory()
 
-	wA := NewWorker(q, repo, WithBackoff(noBackoff))
+	wA, _, _ := newProcWorker(t, q, repo)
 	sA := session.New(session.Config{Host: "127.0.0.1", Port: 1,
 		SystemID: "esp", Password: "secreto", SourceAddr: "shield",
 		MsgPerSecond: 100, MaxConcurrency: 1}, wA)
 	sA.Close()
 	wA.SetSession(sA)
 
-	wB := NewWorker(q, repo, WithBackoff(noBackoff))
+	wB, _, _ := newProcWorker(t, q, repo)
 	wB.SetSession(dialSess(t, wB, simB.Addr()))
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -209,18 +293,10 @@ func TestWorkerFallbackOnTransport(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	deadline := time.Now().Add(3 * time.Second)
-	for time.Now().Before(deadline) {
-		m, _ := repo.GetMessage(ctx, msgID)
-		if m != nil && m.State == "delivered" {
-			if m.TryCount != 2 {
-				t.Fatalf("try_count=%d", m.TryCount)
-			}
-			return
-		}
-		time.Sleep(10 * time.Millisecond)
+	m := waitState(t, repo, msgID, "delivered")
+	if m.TryCount != 2 {
+		t.Fatalf("try=%d", m.TryCount)
 	}
-	t.Fatal("transporte: fallback no entrego por B")
 }
 
 type fixedRouter struct{ ids []int }

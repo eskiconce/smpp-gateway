@@ -4,6 +4,7 @@ import (
 	"context"
 	"time"
 
+	"github.com/eskiconce/smpp-gateway/internal/dlr"
 	"github.com/eskiconce/smpp-gateway/internal/queue"
 	"github.com/eskiconce/smpp-gateway/internal/smpp"
 	"github.com/eskiconce/smpp-gateway/internal/store"
@@ -18,7 +19,7 @@ type Worker struct {
 	repo    store.MessageRepo
 	sess    Sender
 	pending map[uint32]queue.Item
-	dlr     map[string]string
+	dlrProc *dlr.Processor
 	backoff func(try int) time.Duration
 }
 
@@ -28,11 +29,14 @@ func WithBackoff(f func(try int) time.Duration) Option {
 	return func(w *Worker) { w.backoff = f }
 }
 
+func WithDLR(p *dlr.Processor) Option {
+	return func(w *Worker) { w.dlrProc = p }
+}
+
 func NewWorker(q queue.Queue, repo store.MessageRepo, opts ...Option) *Worker {
 	w := &Worker{
 		q: q, repo: repo,
 		pending: map[uint32]queue.Item{},
-		dlr:     map[string]string{},
 		backoff: defaultBackoff,
 	}
 	for _, o := range opts {
@@ -70,25 +74,21 @@ func (w *Worker) OnSubmitResp(seq uint32, status smpp.CommandStatus, msgid strin
 	}
 	delete(w.pending, seq)
 	ctx := context.Background()
+	w.repo.SetSmscMsgid(ctx, it.ID, msgid)
 	if status != smpp.ESME_ROK {
-		w.repo.SetSmscMsgid(ctx, it.ID, msgid)
 		w.fallback(it, false)
 		return
 	}
-	w.repo.SetSmscMsgid(ctx, it.ID, msgid)
-	w.dlr[msgid] = it.ID
+	if w.dlrProc != nil {
+		w.dlrProc.Register(ctx, msgid, it.ID)
+	}
 }
 
 func (w *Worker) OnDLR(msgid, stat string) {
-	id, ok := w.dlr[msgid]
-	if !ok {
+	if w.dlrProc == nil {
 		return
 	}
-	state := "delivered"
-	if stat != "DELIVRD" {
-		state = "undeliv"
-	}
-	w.repo.UpdateState(context.Background(), id, state)
+	w.dlrProc.Handle(context.Background(), msgid, stat)
 }
 
 func (w *Worker) fallback(it queue.Item, transportErr bool) {

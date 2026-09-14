@@ -131,3 +131,46 @@ func TestSimDropOnSubmit(t *testing.T) {
 		t.Fatalf("esperaba cierre de conexion, se recibio %+v", p)
 	}
 }
+
+func TestSimDLRStatus(t *testing.T) {
+	srv := New(Config{Addr: "127.0.0.1:0", SystemID: "esp", Password: "secreto",
+		EnableDLR: true, DLRStatus: "UNDELIV"})
+	if err := srv.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer srv.Close()
+
+	conn, err := net.Dial("tcp", srv.Addr())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	br := bufio.NewReader(conn)
+
+	conn.Write(smpp.Encode(smpp.NewBindTransceiver(1, "esp", "secreto", "", 0, 0, "")))
+	p, err := readPDU(br)
+	if err != nil || p.Header.ID != smpp.BindTransceiverResp {
+		t.Fatalf("bind=%+v err=%v", p.Header, err)
+	}
+
+	conn.Write(smpp.Encode(mustSubmit(t, "test", "569123", "hola")))
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		p, err = readPDU(br)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if p.Header.ID == smpp.DeliverSM {
+			f, err := smpp.ParseDeliverSM(p.Body)
+			if err != nil {
+				t.Fatal(err)
+			}
+			stat, _ := smpp.ParseDLR(f.ShortMessage)
+			if stat != "UNDELIV" {
+				t.Fatalf("stat=%q", stat)
+			}
+			return
+		}
+	}
+	t.Fatal("no recibio DLR con UNDELIV")
+}
