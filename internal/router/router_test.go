@@ -11,8 +11,8 @@ type stubStore struct {
 	groups []Group
 }
 
-func (s *stubStore) ListRoutingRules(context.Context) ([]Rule, error)  { return s.rules, nil }
-func (s *stubStore) ListGroups(context.Context) ([]Group, error)       { return s.groups, nil }
+func (s *stubStore) ListRoutingRules(context.Context) ([]Rule, error) { return s.rules, nil }
+func (s *stubStore) ListGroups(context.Context) ([]Group, error)      { return s.groups, nil }
 
 func TestRouteDirectAndDefault(t *testing.T) {
 	ctx := context.Background()

@@ -24,12 +24,17 @@ import (
 
 func apiConfig() config.Config { return config.Config{} }
 
-type e2eRules struct{}
-
-func (e2eRules) ListRoutingRules(context.Context) ([]router.Rule, error) {
-	return []router.Rule{{ID: 1, Priority: 1, Prefix: "569", ConnectorID: 1}}, nil
+type e2eRules struct {
+	groups []router.Group
 }
-func (e2eRules) ListGroups(context.Context) ([]router.Group, error) { return nil, nil }
+
+func (e *e2eRules) ListRoutingRules(context.Context) ([]router.Rule, error) {
+	return []router.Rule{{ID: 1, Priority: 1, Prefix: "569", GroupID: 3}}, nil
+}
+
+func (e *e2eRules) ListGroups(context.Context) ([]router.Group, error) {
+	return e.groups, nil
+}
 
 func TestE2EHTTPSubmitToDelivered(t *testing.T) {
 	sim := smscsim.New(smscsim.Config{
@@ -63,7 +68,10 @@ func TestE2EHTTPSubmitToDelivered(t *testing.T) {
 		return w.Handle(ctx, it)
 	})
 
-	r := router.New(&e2eRules{}, router.Config{})
+	r := router.New(&e2eRules{groups: []router.Group{{
+		ID: 3, Name: "ops",
+		Members: []router.GroupMember{{ConnectorID: 1, Weight: 1}},
+	}}}, router.Config{})
 	if err := r.Load(ctx); err != nil {
 		t.Fatal(err)
 	}

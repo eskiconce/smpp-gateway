@@ -50,6 +50,9 @@ func TestMessagesEndpoint(t *testing.T) {
 type stubRouterStore struct{}
 
 func (stubRouterStore) ListRoutingRules(context.Context) ([]router.Rule, error) {
-	return []router.Rule{{ID: 1, Priority: 1, ConnectorID: 5}}, nil
+	return []router.Rule{{Priority: 1, ConnectorID: 5}}, nil
 }
-func (stubRouterStore) ListGroups(context.Context) ([]router.Group, error) { return nil, nil }
+
+func (stubRouterStore) ListGroups(context.Context) ([]router.Group, error) {
+	return []router.Group{}, nil
+}

@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"os/signal"
 	"syscall"
@@ -12,7 +13,9 @@ import (
 	"github.com/eskiconce/smpp-gateway/internal/pipeline"
 	"github.com/eskiconce/smpp-gateway/internal/queue"
 	"github.com/eskiconce/smpp-gateway/internal/router"
+	"github.com/eskiconce/smpp-gateway/internal/session"
 	"github.com/eskiconce/smpp-gateway/internal/store"
+	"github.com/eskiconce/smpp-gateway/internal/worker"
 )
 
 func signalCtx() context.Context {
@@ -40,7 +43,7 @@ func runServer(parent context.Context, cfg config.Config) {
 	}
 	defer rq.Close()
 
-	rt := router.New(stubRuleStore{}, router.Config{})
+	rt := router.New(pg, router.Config{})
 	if err := rt.Load(ctx); err != nil {
 		log.Error("router", "err", err)
 		os.Exit(1)
@@ -56,17 +59,45 @@ func runServer(parent context.Context, cfg config.Config) {
 
 func runConnector(parent context.Context, cfg config.Config) {
 	log := logger.New("connector")
-	_ = log
-	// M1: worker wiring completo en Task 12
-}
+	ctx, cancel := context.WithCancel(signalCtx())
+	defer cancel()
 
-// stubRuleStore adapts store.PGRepo to router.Store.
-// TODO(Task 12): replace with real pgRuleStore that queries routing_rules table.
-type stubRuleStore struct{}
+	pg, err := store.NewPG(ctx, cfg.DBURL)
+	if err != nil {
+		log.Error("postgres", "err", err)
+		os.Exit(1)
+	}
+	defer pg.Close()
 
-func (stubRuleStore) ListRoutingRules(_ context.Context) ([]router.Rule, error) {
-	return nil, nil
-}
-func (stubRuleStore) ListGroups(_ context.Context) ([]router.Group, error) {
-	return nil, nil
+	rq, err := queue.NewRedis(cfg.RedisURL)
+	if err != nil {
+		log.Error("redis", "err", err)
+		os.Exit(1)
+	}
+	defer rq.Close()
+
+	connectorID := cfg.ConnectorID
+	w := worker.NewWorker(rq, pg)
+	sess := session.New(session.Config{
+		Host: "127.0.0.1", Port: 2775, SystemID: "esp", Password: "secreto",
+		SourceAddr: "shield", MsgPerSecond: 100, MaxConcurrency: 10,
+	}, w)
+	w.SetSession(sess)
+	if err := sess.Dial(ctx); err != nil {
+		log.Error("dial", "err", err)
+		os.Exit(1)
+	}
+	defer sess.Close()
+
+	for prio := 0; prio <= 2; prio++ {
+		key := queue.Key(connectorID, prio)
+		go func(p int) {
+			_ = rq.Consume(ctx, key, fmt.Sprintf("cn-%d-%d", connectorID, p), func(it queue.Item) error {
+				return w.Handle(ctx, it)
+			})
+		}(prio)
+	}
+
+	log.Info("connector iniciado", "id", connectorID)
+	<-ctx.Done()
 }
