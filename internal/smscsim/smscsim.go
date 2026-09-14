@@ -22,6 +22,7 @@ type Config struct {
 	EnableDLR           bool
 	DropOnSubmit        bool
 	RespondSubmitStatus smpp.CommandStatus
+	DLRStatus           string
 	Handler             Handler
 }
 
@@ -115,7 +116,11 @@ func (s *Server) handleConn(conn net.Conn) {
 				return
 			}
 			if status == smpp.ESME_ROK && s.cfg.EnableDLR {
-				dlr := "id:" + msgid + " sub:001 dlvrd:001 submit date:2609121230 done date:2609121231 stat:DELIVRD err:000 text:"
+				st := s.cfg.DLRStatus
+				if st == "" {
+					st = "DELIVRD"
+				}
+				dlr := "id:" + msgid + " sub:001 dlvrd:001 submit date:2609121230 done date:2609121231 stat:" + st + " err:000 text:"
 				if err := writePDU(conn, smpp.Encode(smpp.NewDeliverSM(s.nextSeq(), s.cfg.SystemID, "", dlr))); err != nil {
 					return
 				}

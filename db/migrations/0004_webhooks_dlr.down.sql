@@ -1,0 +1,2 @@
+ALTER TABLE messages DROP COLUMN IF EXISTS updated_at;
+DROP TABLE IF EXISTS webhooks;

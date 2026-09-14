@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"testing"
+	"time"
 )
 
 func TestMessageRepo(t *testing.T) {
@@ -59,5 +60,42 @@ func TestMessageRepoRouteAndTries(t *testing.T) {
 	}
 	if got.RouteID != 7 || got.TryCount != 1 || got.ConnectorID != 9 {
 		t.Fatalf("got %+v", got)
+	}
+}
+
+func TestMessageUpdatedAtAndStale(t *testing.T) {
+	ctx := context.Background()
+	repo := NewMemory()
+
+	old := &Message{ID: "m1", TenantID: "t1", Msisdn: "5691", Text: "a", State: "accepted"}
+	if err := repo.CreateMessage(ctx, old); err != nil {
+		t.Fatal(err)
+	}
+	fresh := &Message{ID: "m2", TenantID: "t1", Msisdn: "5692", Text: "b", State: "accepted"}
+	if err := repo.CreateMessage(ctx, fresh); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create a second, earlier message and backdate it via UpdateState
+	// by manually setting UpdatedAt in the repo's internal map
+	repo.mu.Lock()
+	m1 := repo.msgs["m1"]
+	m1.UpdatedAt = time.Now().Add(-time.Hour)
+	repo.mu.Unlock()
+
+	stale, err := repo.ListStaleAccepted(ctx, time.Now().Add(-10*time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(stale) != 1 || stale[0].ID != "m1" {
+		t.Fatalf("stale=%+v", stale)
+	}
+
+	if err := repo.UpdateState(ctx, "m1", "delivered"); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := repo.GetMessage(ctx, "m1")
+	if got.UpdatedAt.Before(time.Now().Add(-time.Minute)) {
+		t.Fatalf("updated_at no avanzo: %v", got.UpdatedAt)
 	}
 }

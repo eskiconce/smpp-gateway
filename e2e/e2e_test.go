@@ -8,11 +8,13 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strconv"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/eskiconce/smpp-gateway/internal/api"
 	"github.com/eskiconce/smpp-gateway/internal/config"
+	"github.com/eskiconce/smpp-gateway/internal/dlr"
 	"github.com/eskiconce/smpp-gateway/internal/pipeline"
 	"github.com/eskiconce/smpp-gateway/internal/queue"
 	"github.com/eskiconce/smpp-gateway/internal/router"
@@ -54,7 +56,24 @@ func TestE2EHTTPSubmitToDelivered(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	w := worker.NewWorker(q, repo)
+	var mu sync.Mutex
+	webhookHits := 0
+	whsrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		webhookHits++
+		mu.Unlock()
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer whsrv.Close()
+
+	if err := repo.CreateWebhook(ctx, &store.Webhook{
+		TenantID: "t1", URL: whsrv.URL, Events: []string{"delivered"}, Active: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	w := worker.NewWorker(q, repo, worker.WithDLR(
+		dlr.NewProcessor(dlr.NewMemCache(), repo, dlr.NewWebhookNotifier(repo, 2*time.Second))))
 	sess := session.New(session.Config{
 		Host: "127.0.0.1", Port: port, SystemID: "esp", Password: "secreto",
 		SourceAddr: "shield", MsgPerSecond: 100, MaxConcurrency: 1,
@@ -100,7 +119,17 @@ func TestE2EHTTPSubmitToDelivered(t *testing.T) {
 	for time.Now().Before(deadline) {
 		m, _ := repo.GetMessage(ctx, out.MessageID)
 		if m != nil && m.State == "delivered" {
-			return
+			whDeadline := time.Now().Add(time.Second)
+			for time.Now().Before(whDeadline) {
+				mu.Lock()
+				n := webhookHits
+				mu.Unlock()
+				if n > 0 {
+					return
+				}
+				time.Sleep(time.Millisecond)
+			}
+			t.Fatal("webhook no fue llamado")
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
