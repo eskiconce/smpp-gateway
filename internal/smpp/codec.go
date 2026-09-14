@@ -31,6 +31,7 @@ type CommandStatus uint32
 
 const (
 	ESME_ROK         CommandStatus = 0x00
+	ESME_RSYSERR     CommandStatus = 0x01
 	ESME_RINVCMDLEN  CommandStatus = 0x02
 	ESME_RBINDFAIL   CommandStatus = 0x0B
 	ESME_RINVPASWD   CommandStatus = 0x0C
