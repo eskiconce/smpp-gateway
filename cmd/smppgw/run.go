@@ -9,6 +9,7 @@ import (
 
 	"github.com/eskiconce/smpp-gateway/internal/api"
 	"github.com/eskiconce/smpp-gateway/internal/config"
+	"github.com/eskiconce/smpp-gateway/internal/dlr"
 	"github.com/eskiconce/smpp-gateway/internal/logger"
 	"github.com/eskiconce/smpp-gateway/internal/pipeline"
 	"github.com/eskiconce/smpp-gateway/internal/queue"
@@ -51,6 +52,13 @@ func runServer(parent context.Context, cfg config.Config) {
 
 	pl := pipeline.NewPipeline(pg, rq, rt)
 	srv := api.New(cfg, pl, pg)
+	if cfg.ReconcileInterval > 0 {
+		rec := dlr.NewReconciler(pg, dlr.NewWebhookNotifier(pg, cfg.WebhookTimeout),
+			cfg.ReconcileTimeout, cfg.ReconcileInterval)
+		go func() {
+			_ = rec.Run(ctx)
+		}()
+	}
 	log.Info("server iniciado")
 	if err := srv.Run(ctx); err != nil {
 		log.Error("http", "err", err)
@@ -77,7 +85,15 @@ func runConnector(parent context.Context, cfg config.Config) {
 	defer rq.Close()
 
 	connectorID := cfg.ConnectorID
-	w := worker.NewWorker(rq, pg)
+	cache, err := dlr.NewRedisCache(cfg.RedisURL, cfg.DLRTTL)
+	if err != nil {
+		log.Error("dlr cache", "err", err)
+		os.Exit(1)
+	}
+	defer cache.Close()
+	dlrProc := dlr.NewProcessor(cache, pg, dlr.NewWebhookNotifier(pg, cfg.WebhookTimeout))
+
+	w := worker.NewWorker(rq, pg, worker.WithDLR(dlrProc))
 	sess := session.New(session.Config{
 		Host: "127.0.0.1", Port: 2775, SystemID: "esp", Password: "secreto",
 		SourceAddr: "shield", MsgPerSecond: 100, MaxConcurrency: 10,

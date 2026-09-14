@@ -4,16 +4,19 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"strconv"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/eskiconce/smpp-gateway/internal/api"
 	"github.com/eskiconce/smpp-gateway/internal/config"
+	"github.com/eskiconce/smpp-gateway/internal/dlr"
 	"github.com/eskiconce/smpp-gateway/internal/pipeline"
 	"github.com/eskiconce/smpp-gateway/internal/queue"
 	"github.com/eskiconce/smpp-gateway/internal/router"
@@ -65,7 +68,8 @@ func TestIntegrationSubmitToDelivered(t *testing.T) {
 	_, portStr, _ := net.SplitHostPort(sim.Addr())
 	port, _ := strconv.Atoi(portStr)
 
-	w := worker.NewWorker(redisQ, pgRepo)
+	w := worker.NewWorker(redisQ, pgRepo, worker.WithDLR(
+		dlr.NewProcessor(dlr.NewMemCache(), pgRepo, dlr.NewWebhookNotifier(pgRepo, 2*time.Second))))
 	sess := session.New(session.Config{
 		Host: "127.0.0.1", Port: port, SystemID: "esp", Password: "secreto",
 		SourceAddr: "shield", MsgPerSecond: 100, MaxConcurrency: 1,
@@ -113,4 +117,80 @@ func TestIntegrationSubmitToDelivered(t *testing.T) {
 		time.Sleep(50 * time.Millisecond)
 	}
 	t.Fatal("integracion: el mensaje no llego a delivered")
+}
+
+func TestIntegrationDLRPipeline(t *testing.T) {
+	requireIntegration(t)
+	dsn := os.Getenv("SMG_DB_URL")
+	redisURL := os.Getenv("SMG_REDIS_URL")
+	if dsn == "" || redisURL == "" {
+		t.Skip("SMG_DB_URL/SMG_REDIS_URL vacio")
+	}
+	ctx := context.Background()
+
+	repo, err := store.NewPG(ctx, dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer repo.Close()
+
+	var received map[string]any
+	var mu sync.Mutex
+	whsrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		mu.Lock()
+		json.Unmarshal(b, &received)
+		mu.Unlock()
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer whsrv.Close()
+
+	mid := "it-dlr-" + strconv.FormatInt(time.Now().UnixNano(), 10)
+	if err := repo.CreateMessage(ctx, &store.Message{
+		ID: mid, TenantID: "t1", Msisdn: "569123", Text: "hola", State: "accepted",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.CreateWebhook(ctx, &store.Webhook{
+		TenantID: "t1", URL: whsrv.URL, Events: []string{"delivered"}, Active: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	cache, err := dlr.NewRedisCache(redisURL, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cache.Close()
+	proc := dlr.NewProcessor(cache, repo, dlr.NewWebhookNotifier(repo, 2*time.Second))
+
+	if err := proc.Register(ctx, "it-smsc-1", mid); err != nil {
+		t.Fatal(err)
+	}
+	if err := proc.Handle(ctx, "it-smsc-1", "DELIVRD"); err != nil {
+		t.Fatal(err)
+	}
+
+	m, err := repo.GetMessage(ctx, mid)
+	if err != nil || m.State != "delivered" {
+		t.Fatalf("state=%+v err=%v", m, err)
+	}
+	if v, _ := cache.Lookup(ctx, "it-smsc-1"); v != "" {
+		t.Fatalf("cache deberia estar limpio, got %q", v)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		mu.Lock()
+		ok := received != nil
+		mu.Unlock()
+		if ok {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if received == nil || received["state"] != "delivered" {
+		t.Fatalf("webhook=%+v", received)
+	}
 }
