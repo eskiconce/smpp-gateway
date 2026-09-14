@@ -1,0 +1,5 @@
+ALTER TABLE messages DROP COLUMN IF EXISTS route_id;
+ALTER TABLE routing_rules DROP COLUMN IF EXISTS group_id;
+ALTER TABLE routing_rules DROP COLUMN IF EXISTS from;
+DROP TABLE IF EXISTS group_members;
+DROP TABLE IF EXISTS groups;
