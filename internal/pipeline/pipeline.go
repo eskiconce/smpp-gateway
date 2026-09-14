@@ -3,7 +3,7 @@ package pipeline
 import (
 	"context"
 	"errors"
-	"strconv"
+	"regexp"
 	"time"
 
 	"github.com/eskiconce/smpp-gateway/internal/queue"
@@ -13,6 +13,10 @@ import (
 	"github.com/google/uuid"
 )
 
+type Router interface {
+	Route(ctx context.Context, in router.RouteInput) (router.RouteResult, error)
+}
+
 type Outgoing struct {
 	TenantID   string
 	SourceAddr string
@@ -21,10 +25,6 @@ type Outgoing struct {
 	RoutingTag string
 	Priority   int
 	DataCoding int
-}
-
-type Router interface {
-	Route(ctx context.Context, in router.RouteInput) (router.RouteResult, error)
 }
 
 type Pipeline struct {
@@ -37,13 +37,26 @@ func NewPipeline(repo store.MessageRepo, q queue.Queue, r Router) *Pipeline {
 	return &Pipeline{repo: repo, q: q, r: r}
 }
 
-var ErrEmpty = errors.New("pipeline: mensaje vacio")
+var tagRe = regexp.MustCompile(`\[[A-Za-z0-9_]+\]`)
+
+func splitTag(text string) (clean, tag string) {
+	loc := tagRe.FindStringIndex(text)
+	if loc == nil {
+		return text, ""
+	}
+	return text[:loc[0]] + text[loc[1]:], text[loc[0]+1 : loc[1]-1]
+}
 
 func (p *Pipeline) Submit(ctx context.Context, out Outgoing) (string, int, error) {
-	if out.Text == "" || out.Msisdn == "" {
-		return "", 0, ErrEmpty
+	if out.Msisdn == "" || out.Text == "" {
+		return "", 0, errors.New("msisdn y text requeridos")
 	}
-	_, segments, err := smpp.SplitText(out.Text)
+	text, tag := out.Text, out.RoutingTag
+	if tag == "" {
+		text, tag = splitTag(out.Text)
+	}
+
+	_, segments, err := smpp.SplitText(text)
 	if err != nil {
 		return "", 0, err
 	}
@@ -52,37 +65,36 @@ func (p *Pipeline) Submit(ctx context.Context, out Outgoing) (string, int, error
 		TenantID:   out.TenantID,
 		SourceAddr: out.SourceAddr,
 		Msisdn:     out.Msisdn,
-		RoutingTag: out.RoutingTag,
+		RoutingTag: tag,
 	})
 	if err != nil {
 		return "", 0, err
 	}
+	if len(res.Connectors) == 0 {
+		return "", 0, router.ErrNoRoute
+	}
 
-	connectorID := res.Connectors[0]
 	msgID := uuid.NewString()
 	msg := &store.Message{
 		ID: msgID, TenantID: out.TenantID, SourceAddr: out.SourceAddr,
-		Msisdn: out.Msisdn, Text: out.Text, Segments: segments,
-		ConnectorID: connectorID, RouteID: res.RuleID, State: "buffered", CreatedAt: time.Now(),
+		Msisdn: out.Msisdn, Text: text, Segments: segments,
+		ConnectorID: res.Connectors[0], RouteID: res.RuleID, State: "buffered", CreatedAt: time.Now(),
 	}
 	if err := p.repo.CreateMessage(ctx, msg); err != nil {
 		return "", 0, err
 	}
 
 	item := queue.Item{
-		ID: msgID, TenantID: out.TenantID, ConnectorID: connectorID,
+		ID: msgID, TenantID: out.TenantID, ConnectorID: res.Connectors[0],
 		Priority: out.Priority, DataCoding: out.DataCoding,
-		Msisdn: out.Msisdn, SourceAddr: out.SourceAddr, Text: out.Text,
+		Msisdn: out.Msisdn, SourceAddr: out.SourceAddr, Text: text,
+		Candidates: res.Connectors, Try: 0,
 	}
-	if err := p.q.Enqueue(ctx, queueKey(connectorID, out.Priority), item); err != nil {
+	if err := p.q.Enqueue(ctx, queue.Key(res.Connectors[0], out.Priority), item); err != nil {
 		return "", 0, err
 	}
 	if err := p.repo.UpdateState(ctx, msgID, "enqueued"); err != nil {
 		return "", 0, err
 	}
 	return msgID, segments, nil
-}
-
-func queueKey(connectorID, priority int) string {
-	return "stream:con:" + strconv.Itoa(connectorID) + ":" + strconv.Itoa(priority)
 }
