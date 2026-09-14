@@ -17,6 +17,13 @@ func PutU32(b []byte, v uint32) { binary.BigEndian.PutUint32(b, v) }
 
 func PutU16(b []byte, v uint16) { binary.BigEndian.PutUint16(b, v) }
 
+func GetU16(b []byte) uint16 {
+	if len(b) < 2 {
+		return 0
+	}
+	return uint16(b[0])<<8 | uint16(b[1])
+}
+
 type Reader struct {
 	b   []byte
 	off int
