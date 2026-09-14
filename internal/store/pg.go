@@ -2,8 +2,10 @@ package store
 
 import (
 	"context"
+	"time"
 
 	"github.com/eskiconce/smpp-gateway/internal/router"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -33,22 +35,22 @@ func (r *PGRepo) CreateMessage(ctx context.Context, m *Message) error {
 }
 
 func (r *PGRepo) UpdateState(ctx context.Context, id, state string) error {
-	_, err := r.pool.Exec(ctx, `UPDATE messages SET state=$2 WHERE id=$1`, id, state)
+	_, err := r.pool.Exec(ctx, `UPDATE messages SET state=$2, updated_at=now() WHERE id=$1`, id, state)
 	return err
 }
 
 func (r *PGRepo) SetSmscMsgid(ctx context.Context, id, smscMsgid string) error {
-	_, err := r.pool.Exec(ctx, `UPDATE messages SET smsc_msgid=$2, state='accepted' WHERE id=$1`, id, smscMsgid)
+	_, err := r.pool.Exec(ctx, `UPDATE messages SET smsc_msgid=$2, state='accepted', updated_at=now() WHERE id=$1`, id, smscMsgid)
 	return err
 }
 
 func (r *PGRepo) GetMessage(ctx context.Context, id string) (*Message, error) {
 	var m Message
 	err := r.pool.QueryRow(ctx,
-		`SELECT id, tenant_id, source_addr, msisdn, text, segments, connector_id, route_id, state, try_count, smsc_msgid, created_at
+		`SELECT id, tenant_id, source_addr, msisdn, text, segments, connector_id, route_id, state, try_count, smsc_msgid, created_at, updated_at
          FROM messages WHERE id=$1`, id).
 		Scan(&m.ID, &m.TenantID, &m.SourceAddr, &m.Msisdn, &m.Text, &m.Segments,
-			&m.ConnectorID, &m.RouteID, &m.State, &m.TryCount, &m.SmscMsgid, &m.CreatedAt)
+			&m.ConnectorID, &m.RouteID, &m.State, &m.TryCount, &m.SmscMsgid, &m.CreatedAt, &m.UpdatedAt)
 	return &m, err
 }
 
@@ -59,6 +61,78 @@ func (r *PGRepo) IncrementTry(ctx context.Context, id string) error {
 
 func (r *PGRepo) SetConnector(ctx context.Context, id string, connectorID int) error {
 	_, err := r.pool.Exec(ctx, `UPDATE messages SET connector_id=$2 WHERE id=$1`, id, connectorID)
+	return err
+}
+
+func (r *PGRepo) ListStaleAccepted(ctx context.Context, before time.Time) ([]Message, error) {
+	rows, err := r.pool.Query(ctx, `
+        SELECT id, tenant_id, source_addr, msisdn, text, segments, connector_id, route_id,
+               state, try_count, smsc_msgid, created_at, updated_at
+        FROM messages WHERE state='accepted' AND updated_at < $1
+        ORDER BY updated_at LIMIT 500`, before)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Message
+	for rows.Next() {
+		var m Message
+		if err := rows.Scan(&m.ID, &m.TenantID, &m.SourceAddr, &m.Msisdn, &m.Text,
+			&m.Segments, &m.ConnectorID, &m.RouteID, &m.State, &m.TryCount,
+			&m.SmscMsgid, &m.CreatedAt, &m.UpdatedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, m)
+	}
+	return out, rows.Err()
+}
+
+const webhookCols = `id, tenant_id, url, auth_token, events, active, created_at`
+
+func scanWebhooks(rows pgx.Rows) ([]Webhook, error) {
+	defer rows.Close()
+	var out []Webhook
+	for rows.Next() {
+		var w Webhook
+		if err := rows.Scan(&w.ID, &w.TenantID, &w.URL, &w.AuthToken, &w.Events, &w.Active, &w.CreatedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, w)
+	}
+	return out, rows.Err()
+}
+
+func (r *PGRepo) ListWebhooks(ctx context.Context, tenantID string) ([]Webhook, error) {
+	rows, err := r.pool.Query(ctx, `SELECT `+webhookCols+` FROM webhooks WHERE tenant_id=$1 ORDER BY id`, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	return scanWebhooks(rows)
+}
+
+func (r *PGRepo) ListActiveByEvent(ctx context.Context, tenantID, event string) ([]Webhook, error) {
+	rows, err := r.pool.Query(ctx, `SELECT `+webhookCols+` FROM webhooks
+        WHERE tenant_id=$1 AND active AND $2 = ANY(events) ORDER BY id`, tenantID, event)
+	if err != nil {
+		return nil, err
+	}
+	return scanWebhooks(rows)
+}
+
+func (r *PGRepo) CreateWebhook(ctx context.Context, w *Webhook) error {
+	return r.pool.QueryRow(ctx, `INSERT INTO webhooks (tenant_id, url, auth_token, events, active)
+        VALUES ($1,$2,$3,$4,$5) RETURNING id, created_at`,
+		w.TenantID, w.URL, w.AuthToken, w.Events, w.Active).Scan(&w.ID, &w.CreatedAt)
+}
+
+func (r *PGRepo) UpdateWebhook(ctx context.Context, w Webhook) error {
+	_, err := r.pool.Exec(ctx, `UPDATE webhooks SET url=$2, auth_token=$3, events=$4, active=$5 WHERE id=$1`,
+		w.ID, w.URL, w.AuthToken, w.Events, w.Active)
+	return err
+}
+
+func (r *PGRepo) DeleteWebhook(ctx context.Context, id int) error {
+	_, err := r.pool.Exec(ctx, `DELETE FROM webhooks WHERE id=$1`, id)
 	return err
 }
 
