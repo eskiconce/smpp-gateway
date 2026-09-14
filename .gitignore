@@ -22,3 +22,7 @@ node_modules/
 data/
 tmp/.worktrees/
 smppgw
+
+# Herramientas de desarrollo (evitar artefactos de sesión)
+.superpowers/
+.worktrees/
