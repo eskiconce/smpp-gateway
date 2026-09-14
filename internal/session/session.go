@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/tls"
 	"fmt"
+	"io"
 	"net"
 	"regexp"
 	"sync"
@@ -66,6 +67,7 @@ func New(cfg Config, h Handler) *Session {
 }
 
 func (s *Session) Dial(ctx context.Context) error {
+	delay := 300 * time.Millisecond
 	for {
 		err := s.tryDial()
 		if err == nil {
@@ -74,7 +76,11 @@ func (s *Session) Dial(ctx context.Context) error {
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
-		case <-time.After(time.Second):
+		case <-time.After(delay):
+		}
+		delay *= 2
+		if delay > 5*time.Second {
+			delay = 5 * time.Second
 		}
 	}
 }
@@ -124,7 +130,7 @@ func (s *Session) bind(conn net.Conn) error {
 
 func readPDU(conn net.Conn) (*smpp.PDU, error) {
 	head := make([]byte, 4)
-	if _, err := ioReadFull(conn, head); err != nil {
+	if _, err := io.ReadFull(conn, head); err != nil {
 		return nil, err
 	}
 	n := int(smpp.GetU32(head))
@@ -132,22 +138,10 @@ func readPDU(conn net.Conn) (*smpp.PDU, error) {
 		return nil, fmt.Errorf("pdu corto: %d", n)
 	}
 	rest := make([]byte, n-4)
-	if _, err := ioReadFull(conn, rest); err != nil {
+	if _, err := io.ReadFull(conn, rest); err != nil {
 		return nil, err
 	}
 	return smpp.Decode(append(head, rest...))
-}
-
-func ioReadFull(conn net.Conn, buf []byte) (int, error) {
-	got := 0
-	for got < len(buf) {
-		n, err := conn.Read(buf[got:])
-		got += n
-		if err != nil {
-			return got, err
-		}
-	}
-	return got, nil
 }
 
 func (s *Session) readerLoop(conn net.Conn) {
