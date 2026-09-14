@@ -2,6 +2,7 @@ package worker
 
 import (
 	"context"
+	"sync"
 
 	"github.com/eskiconce/smpp-gateway/internal/queue"
 	"github.com/eskiconce/smpp-gateway/internal/smpp"
@@ -17,6 +18,7 @@ type Worker struct {
 	repo store.MessageRepo
 	sess Sender
 
+	mu      sync.Mutex
 	pending map[uint32]string // seq -> messageID
 	dlr     map[string]string // smscMsgid -> messageID
 }
@@ -33,29 +35,38 @@ func (w *Worker) Handle(ctx context.Context, it queue.Item) error {
 		w.repo.UpdateState(ctx, it.ID, "failed")
 		return nil
 	}
+	w.mu.Lock()
 	w.pending[seq] = it.ID
+	w.mu.Unlock()
 	return nil
 }
 
 // OnSubmitResp implementa session.Handler.
 func (w *Worker) OnSubmitResp(seq uint32, status smpp.CommandStatus, msgid string) {
+	w.mu.Lock()
 	id, ok := w.pending[seq]
 	if !ok {
+		w.mu.Unlock()
 		return
 	}
 	delete(w.pending, seq)
+	w.mu.Unlock()
 	ctx := context.Background()
 	if status != smpp.ESME_ROK {
 		w.repo.UpdateState(ctx, id, "rejected")
 		return
 	}
 	w.repo.SetSmscMsgid(ctx, id, msgid)
+	w.mu.Lock()
 	w.dlr[msgid] = id // cache en caliente; la persistencia real llega en M3
+	w.mu.Unlock()
 }
 
 // OnDLR implementa session.Handler.
 func (w *Worker) OnDLR(msgid, stat string) {
+	w.mu.Lock()
 	id, ok := w.dlr[msgid]
+	w.mu.Unlock()
 	if !ok {
 		return
 	}
