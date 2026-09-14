@@ -162,3 +162,11 @@ func (r *MemoryRepo) DeleteWebhook(_ context.Context, id int) error {
 	}
 	return nil
 }
+
+func (r *MemoryRepo) BackdoorSetUpdatedAt(id string, t time.Time) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if m := r.msgs[id]; m != nil {
+		m.UpdatedAt = t
+	}
+}
