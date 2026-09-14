@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 
+	"github.com/eskiconce/smpp-gateway/internal/router"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -49,4 +50,23 @@ func (r *PGRepo) GetMessage(ctx context.Context, id string) (*Message, error) {
 		Scan(&m.ID, &m.TenantID, &m.SourceAddr, &m.Msisdn, &m.Text, &m.Segments,
 			&m.ConnectorID, &m.State, &m.TryCount, &m.SmscMsgid, &m.CreatedAt)
 	return &m, err
+}
+
+func (r *PGRepo) ListRoutingRules(ctx context.Context) ([]router.Rule, error) {
+	rows, err := r.pool.Query(ctx,
+		`SELECT priority, COALESCE(tenant_id,''), prefix, regex, COALESCE(routing_tag,''), connector_id
+         FROM routing_rules ORDER BY priority`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var rules []router.Rule
+	for rows.Next() {
+		var rl router.Rule
+		if err := rows.Scan(&rl.Priority, &rl.TenantID, &rl.Prefix, &rl.Regex, &rl.RoutingTag, &rl.ConnectorID); err != nil {
+			return nil, err
+		}
+		rules = append(rules, rl)
+	}
+	return rules, rows.Err()
 }
