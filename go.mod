@@ -1,11 +1,12 @@
 module github.com/eskiconce/smpp-gateway
 
-go 1.25.0
+go 1.26.0
 
 require (
 	github.com/alicebob/miniredis/v2 v2.39.0
 	github.com/jackc/pgx/v5 v5.11.0
 	github.com/redis/go-redis/v9 v9.22.0
+	golang.org/x/time v0.16.0
 )
 
 require (
