@@ -21,3 +21,4 @@ node_modules/
 *.log
 data/
 tmp/.worktrees/
+smppgw
