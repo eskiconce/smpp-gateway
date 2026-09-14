@@ -32,13 +32,13 @@ type MessageRepo interface {
 }
 
 type Webhook struct {
-	ID        int
-	TenantID  string
-	URL       string
-	AuthToken string
-	Events    []string
-	Active    bool
-	CreatedAt time.Time
+	ID        int       `json:"id"`
+	TenantID  string    `json:"tenant_id"`
+	URL       string    `json:"url"`
+	AuthToken string    `json:"auth_token"`
+	Events    []string  `json:"events"`
+	Active    bool      `json:"active"`
+	CreatedAt time.Time `json:"created_at"`
 }
 
 type WebhookRepo interface {
