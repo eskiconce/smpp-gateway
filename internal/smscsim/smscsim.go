@@ -7,23 +7,31 @@ import (
 	"io"
 	"net"
 	"sync"
-
-	"github.com/eskiconce/smpp-gateway/internal/smpp"
 )
+
+import "github.com/eskiconce/smpp-gateway/internal/smpp"
+
+type Handler struct {
+	OnSubmit func(msgid string, seq uint32) error
+}
 
 type Config struct {
 	Addr      string
 	SystemID  string
 	Password  string
 	EnableDLR bool
+	Handler   Handler
 }
 
 type Server struct {
-	cfg   Config
-	ln    net.Listener
-	conns sync.Map
-	seq   uint32
-	mu    sync.Mutex
+	cfg Config
+	ln  net.Listener
+	seq uint32
+	mu  sync.Mutex
+}
+
+func MsgidFor(seq uint32) string {
+	return fmt.Sprintf("smsc-%d", seq)
 }
 
 func New(cfg Config) *Server {
@@ -62,6 +70,7 @@ func (s *Server) acceptLoop() {
 func (s *Server) handleConn(conn net.Conn) {
 	defer conn.Close()
 	br := bufio.NewReader(conn)
+	bound := false
 	for {
 		p, err := readPDU(br)
 		if err != nil {
@@ -74,21 +83,43 @@ func (s *Server) handleConn(conn net.Conn) {
 			if err != nil || bf.SystemID != s.cfg.SystemID || bf.Password != s.cfg.Password {
 				status = smpp.ESME_RINVPASWD
 			}
-			conn.Write(smpp.Encode(smpp.NewBindTransceiverResp(p.Header.Seq, status, s.cfg.SystemID)))
-			s.conns.Store(conn, true)
+			if err := writePDU(conn, smpp.Encode(smpp.NewBindTransceiverResp(p.Header.Seq, status, s.cfg.SystemID))); err != nil {
+				return
+			}
+			if status == smpp.ESME_ROK {
+				bound = true
+			}
 		case smpp.SubmitSM:
-			msgid := fmt.Sprintf("smsc-%d", p.Header.Seq)
-			conn.Write(smpp.Encode(smpp.NewSubmitSMResp(p.Header.Seq, smpp.ESME_ROK, msgid)))
+			if !bound {
+				writePDU(conn, smpp.Encode(smpp.NewSubmitSMResp(p.Header.Seq, smpp.ESME_RBINDFAIL, "")))
+				return
+			}
+			msgid := MsgidFor(p.Header.Seq)
+			if s.cfg.Handler.OnSubmit != nil {
+				if err := s.cfg.Handler.OnSubmit(msgid, p.Header.Seq); err != nil {
+					writePDU(conn, smpp.Encode(smpp.NewSubmitSMResp(p.Header.Seq, smpp.ESME_RUNKNOWNERR, "")))
+					return
+				}
+			}
+			if err := writePDU(conn, smpp.Encode(smpp.NewSubmitSMResp(p.Header.Seq, smpp.ESME_ROK, msgid))); err != nil {
+				return
+			}
 			if s.cfg.EnableDLR {
 				dlr := "id:" + msgid + " sub:001 dlvrd:001 submit date:2609121230 done date:2609121231 stat:DELIVRD err:000 text:"
-				conn.Write(smpp.Encode(smpp.NewDeliverSM(s.nextSeq(), s.cfg.SystemID, "", dlr)))
+				if err := writePDU(conn, smpp.Encode(smpp.NewDeliverSM(s.nextSeq(), s.cfg.SystemID, "", dlr))); err != nil {
+					return
+				}
 			}
 		case smpp.EnquireLink:
-			conn.Write(smpp.Encode(smpp.NewEnquireLinkResp(p.Header.Seq)))
+			if err := writePDU(conn, smpp.Encode(smpp.NewEnquireLinkResp(p.Header.Seq))); err != nil {
+				return
+			}
 		default:
 			resp := &smpp.PDU{Header: smpp.Head(p.Header.Seq, smpp.GenericNack), Body: make([]byte, 4)}
 			smpp.PutU32(resp.Body, uint32(smpp.ESME_RUNKNOWNERR))
-			conn.Write(smpp.Encode(resp))
+			if err := writePDU(conn, smpp.Encode(resp)); err != nil {
+				return
+			}
 		}
 	}
 }
@@ -98,6 +129,11 @@ func (s *Server) nextSeq() uint32 {
 	defer s.mu.Unlock()
 	s.seq++
 	return s.seq
+}
+
+func writePDU(conn net.Conn, data []byte) error {
+	_, err := conn.Write(data)
+	return err
 }
 
 func readPDU(br *bufio.Reader) (*smpp.PDU, error) {
