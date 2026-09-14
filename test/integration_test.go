@@ -24,6 +24,7 @@ import (
 	"github.com/eskiconce/smpp-gateway/internal/smscsim"
 	"github.com/eskiconce/smpp-gateway/internal/store"
 	"github.com/eskiconce/smpp-gateway/internal/worker"
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 func requireIntegration(t *testing.T) {
@@ -50,6 +51,12 @@ func TestIntegrationSubmitToDelivered(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer pgRepo.Close()
+
+	pgPool, _ := pgxpool.New(ctx, dbURL)
+	defer pgPool.Close()
+	pgPool.Exec(ctx, `INSERT INTO tenants (id, name, status) VALUES ('t1', 'test', 'active') ON CONFLICT (id) DO NOTHING`) //nolint:errcheck
+	pgPool.Exec(ctx, `INSERT INTO connectors (id, name, type, host, port, system_id, password, bind_mode) VALUES (1, 'sim', 'smpp', '127.0.0.1', 2775, 'esp', 'secreto', 'transceiver') ON CONFLICT (id) DO NOTHING`) //nolint:errcheck
+	pgPool.Exec(ctx, `INSERT INTO routing_rules (priority, tenant_id, prefix, connector_id) VALUES (1, 't1', '569', 1) ON CONFLICT DO NOTHING`) //nolint:errcheck
 
 	redisQ, err := queue.NewRedis(redisURL)
 	if err != nil {
@@ -100,7 +107,9 @@ func TestIntegrationSubmitToDelivered(t *testing.T) {
 		t.Fatal(err)
 	}
 	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("status %d", resp.StatusCode)
+		b, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		t.Fatalf("status %d: %s", resp.StatusCode, string(b))
 	}
 	var out struct {
 		MessageID string `json:"message_id"`
@@ -133,6 +142,10 @@ func TestIntegrationDLRPipeline(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer repo.Close()
+
+	pgPool, _ := pgxpool.New(ctx, dsn)
+	defer pgPool.Close()
+	pgPool.Exec(ctx, `INSERT INTO tenants (id, name, status) VALUES ('t1', 'test', 'active') ON CONFLICT (id) DO NOTHING`) //nolint:errcheck
 
 	var received map[string]any
 	var mu sync.Mutex

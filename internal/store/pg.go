@@ -138,7 +138,7 @@ func (r *PGRepo) DeleteWebhook(ctx context.Context, id int) error {
 
 func (r *PGRepo) ListRoutingRules(ctx context.Context) ([]router.Rule, error) {
 	rows, err := r.pool.Query(ctx,
-		`SELECT id, priority, COALESCE(tenant_id,''), COALESCE(from_addr,''), prefix, regex, COALESCE(routing_tag,''), connector_id, COALESCE(group_id,0)
+		`SELECT id, priority, COALESCE(tenant_id,''), COALESCE("from",''::text), prefix, regex, COALESCE(routing_tag,''), connector_id, COALESCE(group_id,0)
          FROM routing_rules ORDER BY priority`)
 	if err != nil {
 		return nil, err
@@ -158,8 +158,8 @@ func (r *PGRepo) ListRoutingRules(ctx context.Context) ([]router.Rule, error) {
 func (r *PGRepo) ListGroups(ctx context.Context) ([]router.Group, error) {
 	rows, err := r.pool.Query(ctx,
 		`SELECT g.id, g.name, COALESCE(gm.connector_id,0), COALESCE(gm.weight,1)
-         FROM routing_groups g
-         LEFT JOIN routing_group_members gm ON gm.group_id = g.id
+         FROM groups g
+         LEFT JOIN group_members gm ON gm.group_id = g.id
          ORDER BY g.id`)
 	if err != nil {
 		return nil, err
