@@ -3,11 +3,13 @@ package main
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"os"
 	"os/signal"
 	"syscall"
 
 	"github.com/eskiconce/smpp-gateway/internal/api"
+	"github.com/eskiconce/smpp-gateway/internal/auth"
 	"github.com/eskiconce/smpp-gateway/internal/billing"
 	"github.com/eskiconce/smpp-gateway/internal/config"
 	"github.com/eskiconce/smpp-gateway/internal/dlr"
@@ -27,6 +29,27 @@ func (a billingAdapter) Debit(ctx context.Context, tenantID, messageID string, a
 	return err
 }
 
+func ensureAdmin(ctx context.Context, cfg config.Config, repo *store.PGRepo) error {
+	users, err := repo.ListUsers(ctx)
+	if err != nil {
+		return err
+	}
+	if len(users) > 0 {
+		return nil
+	}
+	if cfg.AdminPassword == "" {
+		slog.Warn("no hay usuarios y SMG_ADMIN_PASSWORD vacio; no se crea admin")
+		return nil
+	}
+	hash, err := auth.HashPassword(cfg.AdminPassword)
+	if err != nil {
+		return err
+	}
+	return repo.CreateUser(ctx, &store.User{
+		Username: cfg.AdminUser, PasswordHash: hash, Role: "superadmin",
+	})
+}
+
 func signalCtx() context.Context {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	_ = stop
@@ -44,6 +67,11 @@ func runServer(parent context.Context, cfg config.Config) {
 		os.Exit(1)
 	}
 	defer pg.Close()
+
+	if err := ensureAdmin(ctx, cfg, pg); err != nil {
+		log.Error("admin bootstrap", "err", err)
+		os.Exit(1)
+	}
 
 	rq, err := queue.NewRedis(cfg.RedisURL)
 	if err != nil {
