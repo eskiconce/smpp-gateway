@@ -25,9 +25,14 @@ export async function login(username: string, password: string): Promise<string>
   return data.role as string;
 }
 
-export async function apiFetch<T = unknown>(path: string, opts: RequestInit = {}): Promise<T> {
+export async function apiFetch<T = unknown>(
+  path: string,
+  opts: RequestInit = {},
+  extraHeaders: Record<string, string> = {},
+): Promise<T> {
   const headers: Record<string, string> = {
     ...(opts.headers as Record<string, string> | undefined),
+    ...extraHeaders,
   };
   const tok = getToken();
   if (tok) headers.Authorization = `Bearer ${tok}`;
