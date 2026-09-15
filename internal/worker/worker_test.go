@@ -320,3 +320,113 @@ var defaultStubRules = &stubRules{
 
 func (s *stubRules) ListRoutingRules(context.Context) ([]router.Rule, error) { return s.rules, nil }
 func (s *stubRules) ListGroups(context.Context) ([]router.Group, error)      { return s.groups, nil }
+
+type billingStub struct{ price float64 }
+
+func (f billingStub) Price(_ context.Context, _ string, _ int, _ string, _ int) (float64, error) {
+	return f.price, nil
+}
+func (f billingStub) Reserve(context.Context, string, float64) error { return nil }
+
+type spyBiller struct {
+	mu     sync.Mutex
+	debits map[string]float64
+}
+
+func (s *spyBiller) Debit(_ context.Context, _, messageID string, amount float64) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.debits == nil {
+		s.debits = make(map[string]float64)
+	}
+	s.debits[messageID] = amount
+	return nil
+}
+
+func (s *spyBiller) get(msgID string) (float64, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	v, ok := s.debits[msgID]
+	return v, ok
+}
+
+func TestWorkerDebitsOnAccept(t *testing.T) {
+	sim := smscsim.New(smscsim.Config{Addr: "127.0.0.1:0", SystemID: "esp", Password: "secreto", EnableDLR: true})
+	if err := sim.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer sim.Close()
+
+	repo := store.NewMemory()
+	q := queue.NewMemory()
+	biller := &spyBiller{}
+	w := NewWorker(q, repo, WithBackoff(noBackoff), WithDLR(dlr.NewProcessor(dlr.NewMemCache(), repo, nil)), WithBiller(biller))
+	sess := dialSess(t, w, sim.Addr())
+	w.SetSession(sess)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	go q.Consume(ctx, queue.Key(1, 0), "g", func(it queue.Item) error { return w.Handle(ctx, it) })
+
+	p := pipeline.NewPipeline(repo, q, &fixedRouter{ids: []int{1}}, pipeline.WithBiller(
+		&billingStub{price: 0.25}))
+	msgID, _, err := p.Submit(ctx, pipeline.Outgoing{
+		TenantID: "t1", SourceAddr: "shield", Msisdn: "569123", Text: "hola", Priority: 0,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		m, _ := repo.GetMessage(ctx, msgID)
+		if m != nil && m.State == "delivered" {
+			amt, ok := biller.get(msgID)
+			if !ok || amt != 0.25 {
+				t.Fatalf("debit no registrado: amt=%v ok=%v", amt, ok)
+			}
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("no llego a delivered")
+}
+
+func TestWorkerNoDebitOnReject(t *testing.T) {
+	sim := smscsim.New(smscsim.Config{Addr: "127.0.0.1:0", SystemID: "esp", Password: "secreto",
+		RespondSubmitStatus: smpp.ESME_RSYSERR})
+	if err := sim.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer sim.Close()
+
+	repo := store.NewMemory()
+	q := queue.NewMemory()
+	biller := &spyBiller{}
+	w := NewWorker(q, repo, WithBackoff(noBackoff), WithBiller(biller))
+	sess := dialSess(t, w, sim.Addr())
+	w.SetSession(sess)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	go q.Consume(ctx, queue.Key(1, 0), "g", func(it queue.Item) error { return w.Handle(ctx, it) })
+
+	p := pipeline.NewPipeline(repo, q, &fixedRouter{ids: []int{1}})
+	msgID, _, err := p.Submit(ctx, pipeline.Outgoing{
+		TenantID: "t1", Msisdn: "569123", Text: "hola",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		m, _ := repo.GetMessage(ctx, msgID)
+		if m != nil && m.State == "rejected" {
+			if _, ok := biller.get(msgID); ok {
+				t.Fatal("mensaje rechazado no debia cobrarse")
+			}
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("no llego a rejected")
+}

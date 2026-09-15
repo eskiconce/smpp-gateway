@@ -2,6 +2,7 @@ package worker
 
 import (
 	"context"
+	"log/slog"
 	"time"
 
 	"github.com/eskiconce/smpp-gateway/internal/dlr"
@@ -14,6 +15,10 @@ type Sender interface {
 	Submit(dest, text string, regDelivery uint8) (uint32, error)
 }
 
+type Biller interface {
+	Debit(ctx context.Context, tenantID, messageID string, amount float64) error
+}
+
 type Worker struct {
 	q       queue.Queue
 	repo    store.MessageRepo
@@ -21,6 +26,8 @@ type Worker struct {
 	pending map[uint32]queue.Item
 	dlrProc *dlr.Processor
 	backoff func(try int) time.Duration
+	biller  Biller
+	log     *slog.Logger
 }
 
 type Option func(*Worker)
@@ -33,11 +40,16 @@ func WithDLR(p *dlr.Processor) Option {
 	return func(w *Worker) { w.dlrProc = p }
 }
 
+func WithBiller(b Biller) Option {
+	return func(w *Worker) { w.biller = b }
+}
+
 func NewWorker(q queue.Queue, repo store.MessageRepo, opts ...Option) *Worker {
 	w := &Worker{
 		q: q, repo: repo,
 		pending: map[uint32]queue.Item{},
 		backoff: defaultBackoff,
+		log:     slog.Default(),
 	}
 	for _, o := range opts {
 		o(w)
@@ -74,13 +86,19 @@ func (w *Worker) OnSubmitResp(seq uint32, status smpp.CommandStatus, msgid strin
 	}
 	delete(w.pending, seq)
 	ctx := context.Background()
-	w.repo.SetSmscMsgid(ctx, it.ID, msgid)
 	if status != smpp.ESME_ROK {
+		w.repo.SetSmscMsgid(ctx, it.ID, msgid)
 		w.fallback(it, false)
 		return
 	}
+	w.repo.SetSmscMsgid(ctx, it.ID, msgid)
 	if w.dlrProc != nil {
-		w.dlrProc.Register(ctx, msgid, it.ID)
+		_ = w.dlrProc.Register(ctx, msgid, it.ID)
+	}
+	if w.biller != nil && it.Amount > 0 {
+		if err := w.biller.Debit(ctx, it.TenantID, it.ID, it.Amount); err != nil {
+			w.log.Warn("debit fallido", "message_id", it.ID, "err", err)
+		}
 	}
 }
 
