@@ -6,20 +6,21 @@ import (
 )
 
 type Message struct {
-	ID          string
-	TenantID    string
-	SourceAddr  string
-	Msisdn      string
-	Text        string
-	Segments    int
-	ConnectorID int
-	RouteID     int
-	TryCount    int
-	State       string
-	SmscMsgid   string
-	CreatedAt   time.Time
-	UpdatedAt   time.Time
-	Amount      float64
+	ID            string
+	TenantID      string
+	SourceAddr    string
+	Msisdn        string
+	Text          string
+	Segments      int
+	ConnectorID   int
+	RouteID       int
+	TryCount      int
+	State         string
+	SmscMsgid     string
+	SourceChannel string
+	Amount        float64
+	CreatedAt     time.Time
+	UpdatedAt     time.Time
 }
 
 type MessageRepo interface {
@@ -43,20 +44,23 @@ type Webhook struct {
 }
 
 type Tenant struct {
-	ID         string    `json:"id"`
-	Name       string    `json:"name"`
-	Status     string    `json:"status"`
-	RoutingTag string    `json:"routing_tag"`
-	Balance    float64   `json:"balance"`
-	Mode       string    `json:"mode"`
-	ApiKey     string    `json:"api_key"`
-	CreatedAt  time.Time `json:"created_at"`
+	ID             string    `json:"id"`
+	Name           string    `json:"name"`
+	Status         string    `json:"status"`
+	RoutingTag     string    `json:"routing_tag"`
+	Balance        float64   `json:"balance"`
+	Mode           string    `json:"mode"`
+	ApiKey         string    `json:"api_key"`
+	SmppSystemID   string    `json:"smpp_system_id"`
+	SmppPassword   string    `json:"smpp_password"`
+	CreatedAt      time.Time `json:"created_at"`
 }
 
 type TenantRepo interface {
 	ListTenants(ctx context.Context) ([]Tenant, error)
 	GetTenant(ctx context.Context, id string) (*Tenant, error)
 	GetTenantByAPIKey(ctx context.Context, apiKey string) (*Tenant, error)
+	GetTenantBySMPPSystemID(ctx context.Context, systemID string) (*Tenant, error)
 	CreateTenant(ctx context.Context, t *Tenant) error
 }
 

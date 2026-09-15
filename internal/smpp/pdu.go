@@ -63,7 +63,9 @@ func ParseBindTransceiver(b []byte) (BindFields, error) {
 }
 
 func NewBindTransceiverResp(seq uint32, status CommandStatus, sysID string) *PDU {
-	return &PDU{Header: Head(seq, BindTransceiverResp), Body: []byte(sysID + "\x00")}
+	h := Head(seq, BindTransceiverResp)
+	h.Status = status
+	return &PDU{Header: h, Body: []byte(sysID + "\x00")}
 }
 
 func NewSubmitSM(seq uint32, source, dest, text string, dataCoding, regDelivery uint8) (*PDU, error) {

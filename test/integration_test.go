@@ -34,6 +34,37 @@ func requireIntegration(t *testing.T) {
 	}
 }
 
+func TestIntegrationESMEAuth(t *testing.T) {
+	requireIntegration(t)
+	dsn := os.Getenv("SMG_DB_URL")
+	if dsn == "" {
+		t.Skip("SMG_DB_URL vacio")
+	}
+	ctx := context.Background()
+	repo, err := store.NewPG(ctx, dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer repo.Close()
+
+	if err := repo.CreateTenant(ctx, &store.Tenant{
+		ID: "it-esme", Status: "active",
+		SmppSystemID: "it-esme-01", SmppPassword: "s3cret",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := repo.GetTenantBySMPPSystemID(ctx, "it-esme-01")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.ID != "it-esme" || got.SmppPassword != "s3cret" {
+		t.Fatalf("got=%+v", got)
+	}
+	if _, err := repo.GetTenantBySMPPSystemID(ctx, "no-existe"); err == nil {
+		t.Fatal("esperaba error para systemID inexistente")
+	}
+}
+
 func TestIntegrationSubmitToDelivered(t *testing.T) {
 	requireIntegration(t)
 
