@@ -37,6 +37,7 @@ const (
 	ESME_RINVPASWD   CommandStatus = 0x0C
 	ESME_RINVSYSTID  CommandStatus = 0x0D
 	ESME_RTHROTTLED  CommandStatus = 0x34
+	ESME_0512        CommandStatus = 0x0512
 	ESME_RUNKNOWNERR CommandStatus = 0xFF
 )
 
