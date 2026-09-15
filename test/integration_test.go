@@ -10,11 +10,13 @@ import (
 	"net/http/httptest"
 	"os"
 	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/eskiconce/smpp-gateway/internal/api"
+	"github.com/eskiconce/smpp-gateway/internal/auth"
 	"github.com/eskiconce/smpp-gateway/internal/config"
 	"github.com/eskiconce/smpp-gateway/internal/dlr"
 	"github.com/eskiconce/smpp-gateway/internal/pipeline"
@@ -240,4 +242,58 @@ func TestIntegrationBillingLedger(t *testing.T) {
 	if err != nil || len(txns) != 2 {
 		t.Fatalf("txns=%+v err=%v", txns, err)
 	}
+}
+
+func TestIntegrationAdminLoginVMetrics(t *testing.T) {
+	requireIntegration(t)
+	dsn := os.Getenv("SMG_DB_URL")
+	if dsn == "" {
+		t.Skip("SMG_DB_URL vacio")
+	}
+	ctx := context.Background()
+	repo, err := store.NewPG(ctx, dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer repo.Close()
+
+	adminUser := "it-admin"
+	users, _ := repo.ListUsers(ctx)
+	for _, u := range users {
+		if u.Username == adminUser {
+			_ = repo.DeleteUser(ctx, u.ID)
+		}
+	}
+	hash, _ := auth.HashPassword("s3cret")
+	if err := repo.CreateUser(ctx, &store.User{Username: adminUser, PasswordHash: hash, Role: "superadmin"}); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := config.Config{Role: "server", JWTSecret: "it-secret", JWTTTL: time.Hour, MetricsInterval: time.Second}
+	srv := api.New(cfg, nil, repo)
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+
+	resp, err := http.Post(ts.URL+"/api/v1/auth/login", "application/json",
+		strings.NewReader(`{"username":"it-admin","password":"s3cret"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != 200 {
+		t.Fatalf("login %d", resp.StatusCode)
+	}
+	var tok struct{ Token string `json:"token"` }
+	json.NewDecoder(resp.Body).Decode(&tok)
+	resp.Body.Close()
+
+	metricsReq, _ := http.NewRequest("GET", ts.URL+"/api/v1/metrics", nil)
+	metricsReq.Header.Set("Authorization", "Bearer "+tok.Token)
+	resp2, err := http.DefaultClient.Do(metricsReq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp2.StatusCode != 200 {
+		t.Fatalf("metrics %d", resp2.StatusCode)
+	}
+	resp2.Body.Close()
 }
