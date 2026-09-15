@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 )
@@ -97,5 +98,39 @@ func TestMessageUpdatedAtAndStale(t *testing.T) {
 	got, _ := repo.GetMessage(ctx, "m1")
 	if got.UpdatedAt.Before(time.Now().Add(-time.Minute)) {
 		t.Fatalf("updated_at no avanzo: %v", got.UpdatedAt)
+	}
+}
+
+func TestGetTenantBySMPPSystemID(t *testing.T) {
+	repo := NewMemory()
+	ctx := context.Background()
+	if err := repo.CreateTenant(ctx, &Tenant{
+		ID: "t1", Status: "active",
+		SmppSystemID: "esme-01", SmppPassword: "pass",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := repo.GetTenantBySMPPSystemID(ctx, "esme-01")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.ID != "t1" || got.SmppPassword != "pass" {
+		t.Fatalf("got=%+v", got)
+	}
+	if _, err := repo.GetTenantBySMPPSystemID(ctx, "no-existe"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("esperaba ErrNotFound, got %v", err)
+	}
+}
+
+func TestMessageSourceChannel(t *testing.T) {
+	repo := NewMemory()
+	ctx := context.Background()
+	m := &Message{ID: "m1", TenantID: "t1", Msisdn: "569", Text: "hola", SourceChannel: "smpp"}
+	if err := repo.CreateMessage(ctx, m); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := repo.GetMessage(ctx, "m1")
+	if got.SourceChannel != "smpp" {
+		t.Fatalf("source_channel=%q", got.SourceChannel)
 	}
 }

@@ -219,6 +219,18 @@ func (r *MemoryRepo) GetTenantByAPIKey(_ context.Context, apiKey string) (*Tenan
 	return nil, ErrNotFound
 }
 
+func (r *MemoryRepo) GetTenantBySMPPSystemID(_ context.Context, systemID string) (*Tenant, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, t := range r.tenants {
+		if t.SmppSystemID == systemID {
+			cp := *t
+			return &cp, nil
+		}
+	}
+	return nil, ErrNotFound
+}
+
 func (r *MemoryRepo) CreateTenant(_ context.Context, t *Tenant) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()

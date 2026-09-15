@@ -29,9 +29,9 @@ func (r *PGRepo) Close() { r.pool.Close() }
 
 func (r *PGRepo) CreateMessage(ctx context.Context, m *Message) error {
 	_, err := r.pool.Exec(ctx,
-		`INSERT INTO messages (id, tenant_id, source_addr, msisdn, text, segments, connector_id, route_id, state, try_count)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
-		m.ID, m.TenantID, m.SourceAddr, m.Msisdn, m.Text, m.Segments, m.ConnectorID, m.RouteID, m.State, m.TryCount)
+		`INSERT INTO messages (id, tenant_id, source_addr, msisdn, text, segments, connector_id, route_id, state, try_count, source_channel)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
+		m.ID, m.TenantID, m.SourceAddr, m.Msisdn, m.Text, m.Segments, m.ConnectorID, m.RouteID, m.State, m.TryCount, m.SourceChannel)
 	return err
 }
 
@@ -48,10 +48,10 @@ func (r *PGRepo) SetSmscMsgid(ctx context.Context, id, smscMsgid string) error {
 func (r *PGRepo) GetMessage(ctx context.Context, id string) (*Message, error) {
 	var m Message
 	err := r.pool.QueryRow(ctx,
-		`SELECT id, tenant_id, source_addr, msisdn, text, segments, connector_id, route_id, state, try_count, smsc_msgid, created_at, updated_at
+		`SELECT id, tenant_id, source_addr, msisdn, text, segments, connector_id, route_id, state, try_count, smsc_msgid, source_channel, created_at, updated_at
          FROM messages WHERE id=$1`, id).
 		Scan(&m.ID, &m.TenantID, &m.SourceAddr, &m.Msisdn, &m.Text, &m.Segments,
-			&m.ConnectorID, &m.RouteID, &m.State, &m.TryCount, &m.SmscMsgid, &m.CreatedAt, &m.UpdatedAt)
+			&m.ConnectorID, &m.RouteID, &m.State, &m.TryCount, &m.SmscMsgid, &m.SourceChannel, &m.CreatedAt, &m.UpdatedAt)
 	return &m, err
 }
 
@@ -68,7 +68,7 @@ func (r *PGRepo) SetConnector(ctx context.Context, id string, connectorID int) e
 func (r *PGRepo) ListStaleAccepted(ctx context.Context, before time.Time) ([]Message, error) {
 	rows, err := r.pool.Query(ctx, `
         SELECT id, tenant_id, source_addr, msisdn, text, segments, connector_id, route_id,
-               state, try_count, smsc_msgid, created_at, updated_at
+               state, try_count, smsc_msgid, source_channel, created_at, updated_at
         FROM messages WHERE state='accepted' AND updated_at < $1
         ORDER BY updated_at LIMIT 500`, before)
 	if err != nil {
@@ -80,7 +80,7 @@ func (r *PGRepo) ListStaleAccepted(ctx context.Context, before time.Time) ([]Mes
 		var m Message
 		if err := rows.Scan(&m.ID, &m.TenantID, &m.SourceAddr, &m.Msisdn, &m.Text,
 			&m.Segments, &m.ConnectorID, &m.RouteID, &m.State, &m.TryCount,
-			&m.SmscMsgid, &m.CreatedAt, &m.UpdatedAt); err != nil {
+			&m.SmscMsgid, &m.SourceChannel, &m.CreatedAt, &m.UpdatedAt); err != nil {
 			return nil, err
 		}
 		out = append(out, m)
@@ -156,7 +156,8 @@ func (r *PGRepo) ListRoutingRules(ctx context.Context) ([]router.Rule, error) {
 	return rules, rows.Err()
 }
 
-const tenantCols = `id, name, status, coalesce(routing_tag,''), balance, mode, api_key, created_at`
+const tenantCols = `id, name, status, coalesce(routing_tag,''), balance, mode, api_key,
+	smpp_system_id, smpp_password, created_at`
 
 func scanTenants(rows pgx.Rows) ([]Tenant, error) {
 	defer rows.Close()
@@ -164,7 +165,8 @@ func scanTenants(rows pgx.Rows) ([]Tenant, error) {
 	for rows.Next() {
 		var t Tenant
 		rt := ""
-		if err := rows.Scan(&t.ID, &t.Name, &t.Status, &rt, &t.Balance, &t.Mode, &t.ApiKey, &t.CreatedAt); err != nil {
+		if err := rows.Scan(&t.ID, &t.Name, &t.Status, &rt, &t.Balance, &t.Mode, &t.ApiKey,
+			&t.SmppSystemID, &t.SmppPassword, &t.CreatedAt); err != nil {
 			return nil, err
 		}
 		t.RoutingTag = rt
@@ -176,7 +178,8 @@ func scanTenants(rows pgx.Rows) ([]Tenant, error) {
 func scanTenant(row pgx.Row) (*Tenant, error) {
 	var t Tenant
 	rt := ""
-	if err := row.Scan(&t.ID, &t.Name, &t.Status, &rt, &t.Balance, &t.Mode, &t.ApiKey, &t.CreatedAt); err != nil {
+	if err := row.Scan(&t.ID, &t.Name, &t.Status, &rt, &t.Balance, &t.Mode, &t.ApiKey,
+		&t.SmppSystemID, &t.SmppPassword, &t.CreatedAt); err != nil {
 		return nil, err
 	}
 	t.RoutingTag = rt
@@ -209,6 +212,15 @@ func (r *PGRepo) GetTenantByAPIKey(ctx context.Context, apiKey string) (*Tenant,
 	return t, err
 }
 
+func (r *PGRepo) GetTenantBySMPPSystemID(ctx context.Context, systemID string) (*Tenant, error) {
+	row := r.pool.QueryRow(ctx, `SELECT `+tenantCols+` FROM tenants WHERE smpp_system_id=$1`, systemID)
+	t, err := scanTenant(row)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	return t, err
+}
+
 func (r *PGRepo) CreateTenant(ctx context.Context, t *Tenant) error {
 	if t.Mode == "" {
 		t.Mode = "prepaid"
@@ -216,9 +228,9 @@ func (r *PGRepo) CreateTenant(ctx context.Context, t *Tenant) error {
 	if t.Status == "" {
 		t.Status = "active"
 	}
-	_, err := r.pool.Exec(ctx, `INSERT INTO tenants (id, name, status, routing_tag, balance, mode, api_key)
-		VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-		t.ID, t.Name, t.Status, t.RoutingTag, t.Balance, t.Mode, t.ApiKey)
+	_, err := r.pool.Exec(ctx, `INSERT INTO tenants (id, name, status, routing_tag, balance, mode, api_key, smpp_system_id, smpp_password)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+		t.ID, t.Name, t.Status, t.RoutingTag, t.Balance, t.Mode, t.ApiKey, t.SmppSystemID, t.SmppPassword)
 	return err
 }
 
