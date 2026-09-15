@@ -8,6 +8,7 @@ import (
 	"syscall"
 
 	"github.com/eskiconce/smpp-gateway/internal/api"
+	"github.com/eskiconce/smpp-gateway/internal/billing"
 	"github.com/eskiconce/smpp-gateway/internal/config"
 	"github.com/eskiconce/smpp-gateway/internal/dlr"
 	"github.com/eskiconce/smpp-gateway/internal/logger"
@@ -18,6 +19,13 @@ import (
 	"github.com/eskiconce/smpp-gateway/internal/store"
 	"github.com/eskiconce/smpp-gateway/internal/worker"
 )
+
+type billingAdapter struct{ s *billing.Service }
+
+func (a billingAdapter) Debit(ctx context.Context, tenantID, messageID string, amount float64) error {
+	_, err := a.s.Debit(ctx, tenantID, messageID, amount)
+	return err
+}
 
 func signalCtx() context.Context {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
@@ -50,7 +58,8 @@ func runServer(parent context.Context, cfg config.Config) {
 		os.Exit(1)
 	}
 
-	pl := pipeline.NewPipeline(pg, rq, rt)
+	bill := billing.New(pg, pg, pg)
+	pl := pipeline.NewPipeline(pg, rq, rt, pipeline.WithBiller(bill))
 	srv := api.New(cfg, pl, pg)
 	if cfg.ReconcileInterval > 0 {
 		rec := dlr.NewReconciler(pg, dlr.NewWebhookNotifier(pg, cfg.WebhookTimeout),
@@ -92,8 +101,9 @@ func runConnector(parent context.Context, cfg config.Config) {
 	}
 	defer cache.Close()
 	dlrProc := dlr.NewProcessor(cache, pg, dlr.NewWebhookNotifier(pg, cfg.WebhookTimeout))
+	bill := billing.New(pg, pg, pg)
 
-	w := worker.NewWorker(rq, pg, worker.WithDLR(dlrProc))
+	w := worker.NewWorker(rq, pg, worker.WithDLR(dlrProc), worker.WithBiller(billingAdapter{bill}))
 	sess := session.New(session.Config{
 		Host: "127.0.0.1", Port: 2775, SystemID: "esp", Password: "secreto",
 		SourceAddr: "shield", MsgPerSecond: 100, MaxConcurrency: 10,

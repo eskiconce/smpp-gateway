@@ -35,7 +35,7 @@ type Biller interface {
 type nilBiller struct{}
 
 func (nilBiller) Price(context.Context, string, int, string, int) (float64, error) { return 0, nil }
-func (nilBiller) Reserve(context.Context, string, float64) error                    { return nil }
+func (nilBiller) Reserve(context.Context, string, float64) error                   { return nil }
 
 var NilBiller Biller = nilBiller{}
 

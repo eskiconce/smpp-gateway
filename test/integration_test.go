@@ -54,9 +54,9 @@ func TestIntegrationSubmitToDelivered(t *testing.T) {
 
 	pgPool, _ := pgxpool.New(ctx, dbURL)
 	defer pgPool.Close()
-	pgPool.Exec(ctx, `INSERT INTO tenants (id, name, status) VALUES ('t1', 'test', 'active') ON CONFLICT (id) DO NOTHING`) //nolint:errcheck
+	pgPool.Exec(ctx, `INSERT INTO tenants (id, name, status) VALUES ('t1', 'test', 'active') ON CONFLICT (id) DO NOTHING`)                                                                                            //nolint:errcheck
 	pgPool.Exec(ctx, `INSERT INTO connectors (id, name, type, host, port, system_id, password, bind_mode) VALUES (1, 'sim', 'smpp', '127.0.0.1', 2775, 'esp', 'secreto', 'transceiver') ON CONFLICT (id) DO NOTHING`) //nolint:errcheck
-	pgPool.Exec(ctx, `INSERT INTO routing_rules (priority, tenant_id, prefix, connector_id) VALUES (1, 't1', '569', 1) ON CONFLICT DO NOTHING`) //nolint:errcheck
+	pgPool.Exec(ctx, `INSERT INTO routing_rules (priority, tenant_id, prefix, connector_id) VALUES (1, 't1', '569', 1) ON CONFLICT DO NOTHING`)                                                                       //nolint:errcheck
 
 	redisQ, err := queue.NewRedis(redisURL)
 	if err != nil {
@@ -205,5 +205,39 @@ func TestIntegrationDLRPipeline(t *testing.T) {
 	defer mu.Unlock()
 	if received == nil || received["state"] != "delivered" {
 		t.Fatalf("webhook=%+v", received)
+	}
+}
+
+func TestIntegrationBillingLedger(t *testing.T) {
+	requireIntegration(t)
+	dsn := os.Getenv("SMG_DB_URL")
+	if dsn == "" {
+		t.Skip("SMG_DB_URL vacio")
+	}
+	ctx := context.Background()
+	repo, err := store.NewPG(ctx, dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer repo.Close()
+
+	tid := "it-bill-" + strconv.FormatInt(time.Now().UnixNano(), 10)
+	if err := repo.CreateTenant(ctx, &store.Tenant{ID: tid, Name: "it", Balance: 100, ApiKey: tid}); err != nil {
+		t.Fatal(err)
+	}
+	bal, err := repo.Credit(ctx, tid, 25)
+	if err != nil || bal != 125 {
+		t.Fatalf("credit bal=%v err=%v", bal, err)
+	}
+	bal, err = repo.Debit(ctx, tid, "it-msg-1", 10.5)
+	if err != nil || bal != 114.5 {
+		t.Fatalf("debit bal=%v err=%v", bal, err)
+	}
+	if bal, _ := repo.Debit(ctx, tid, "it-msg-1", 10.5); bal != 114.5 {
+		t.Fatalf("debit doble no idempotente: %v", bal)
+	}
+	txns, err := repo.ListTransactions(ctx, tid, 10)
+	if err != nil || len(txns) != 2 {
+		t.Fatalf("txns=%+v err=%v", txns, err)
 	}
 }

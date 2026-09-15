@@ -11,18 +11,18 @@ import (
 var ErrNotFound = errors.New("not found")
 
 type MemoryRepo struct {
-	mu          sync.Mutex
-	msgs        map[string]*Message
-	hooks       []Webhook
-	nextHook    int
-	tenants     map[string]*Tenant
-	rateTables  map[string][]*RateTable
-	rateEntries map[int][]*RateEntry
-	nextTable   int
-	nextEntry   int
+	mu           sync.Mutex
+	msgs         map[string]*Message
+	hooks        []Webhook
+	nextHook     int
+	tenants      map[string]*Tenant
+	rateTables   map[string][]*RateTable
+	rateEntries  map[int][]*RateEntry
+	nextTable    int
+	nextEntry    int
 	transactions []Transaction
-	nextTxnID   int64
-	debitedMsg  map[string]bool
+	nextTxnID    int64
+	debitedMsg   map[string]bool
 }
 
 func NewMemory() *MemoryRepo {

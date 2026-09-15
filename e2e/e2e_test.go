@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/eskiconce/smpp-gateway/internal/api"
+	"github.com/eskiconce/smpp-gateway/internal/billing"
 	"github.com/eskiconce/smpp-gateway/internal/config"
 	"github.com/eskiconce/smpp-gateway/internal/dlr"
 	"github.com/eskiconce/smpp-gateway/internal/pipeline"
@@ -38,6 +39,13 @@ func (e *e2eRules) ListGroups(context.Context) ([]router.Group, error) {
 	return e.groups, nil
 }
 
+type billingAdapter struct{ s *billing.Service }
+
+func (a billingAdapter) Debit(ctx context.Context, tenantID, messageID string, amount float64) error {
+	_, err := a.s.Debit(ctx, tenantID, messageID, amount)
+	return err
+}
+
 func TestE2EHTTPSubmitToDelivered(t *testing.T) {
 	sim := smscsim.New(smscsim.Config{
 		Addr: "127.0.0.1:0", SystemID: "esp", Password: "secreto", EnableDLR: true,
@@ -56,6 +64,17 @@ func TestE2EHTTPSubmitToDelivered(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
+	if err := repo.CreateTenant(ctx, &store.Tenant{ID: "t1", Name: "kiki", Balance: 10, Mode: "prepaid", ApiKey: "e2e-key"}); err != nil {
+		t.Fatal(err)
+	}
+	tbl := &store.RateTable{TenantID: "t1", Name: "e2e", Active: true}
+	if err := repo.CreateRateTable(ctx, tbl); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.CreateRateEntry(ctx, &store.RateEntry{TableID: tbl.ID, Prefix: "", Price: 0.2500}); err != nil {
+		t.Fatal(err)
+	}
+
 	var mu sync.Mutex
 	webhookHits := 0
 	whsrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -73,7 +92,8 @@ func TestE2EHTTPSubmitToDelivered(t *testing.T) {
 	}
 
 	w := worker.NewWorker(q, repo, worker.WithDLR(
-		dlr.NewProcessor(dlr.NewMemCache(), repo, dlr.NewWebhookNotifier(repo, 2*time.Second))))
+		dlr.NewProcessor(dlr.NewMemCache(), repo, dlr.NewWebhookNotifier(repo, 2*time.Second))),
+		worker.WithBiller(billingAdapter{billing.New(repo, repo, repo)}))
 	sess := session.New(session.Config{
 		Host: "127.0.0.1", Port: port, SystemID: "esp", Password: "secreto",
 		SourceAddr: "shield", MsgPerSecond: 100, MaxConcurrency: 1,
@@ -94,14 +114,15 @@ func TestE2EHTTPSubmitToDelivered(t *testing.T) {
 	if err := r.Load(ctx); err != nil {
 		t.Fatal(err)
 	}
-	p := pipeline.NewPipeline(repo, q, r)
+	bill := billing.New(repo, repo, repo)
+	p := pipeline.NewPipeline(repo, q, r, pipeline.WithBiller(bill))
 	srv := api.New(apiConfig(), p, repo)
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
 
 	body, _ := json.Marshal(map[string]string{"to": "569123", "text": "hola"})
 	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, ts.URL+"/api/v1/messages", bytes.NewReader(body))
-	req.Header.Set("X-Tenant-ID", "t1")
+	req.Header.Set("Authorization", "Bearer e2e-key")
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatal(err)
@@ -119,6 +140,10 @@ func TestE2EHTTPSubmitToDelivered(t *testing.T) {
 	for time.Now().Before(deadline) {
 		m, _ := repo.GetMessage(ctx, out.MessageID)
 		if m != nil && m.State == "delivered" {
+			tnt, _ := repo.GetTenant(ctx, "t1")
+			if tnt.Balance != 9.75 {
+				t.Fatalf("tras delivered balance=%v (esperado 9.75)", tnt.Balance)
+			}
 			whDeadline := time.Now().Add(time.Second)
 			for time.Now().Before(whDeadline) {
 				mu.Lock()

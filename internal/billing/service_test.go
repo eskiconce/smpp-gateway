@@ -9,7 +9,10 @@ import (
 	"github.com/eskiconce/smpp-gateway/internal/store"
 )
 
-type fakeRates struct{ table *store.RateTable; entries []store.RateEntry }
+type fakeRates struct {
+	table   *store.RateTable
+	entries []store.RateEntry
+}
 
 func (f fakeRates) GetActiveRateTable(_ context.Context, tenantID string) (*store.RateTable, error) {
 	if f.table == nil || f.table.TenantID != tenantID {
@@ -21,9 +24,9 @@ func (fakeRates) ListRateTables(context.Context, string) ([]store.RateTable, err
 func (f fakeRates) ListRateEntries(_ context.Context, _ int) ([]store.RateEntry, error) {
 	return f.entries, nil
 }
-func (fakeRates) CreateRateTable(context.Context, *store.RateTable) error        { return nil }
-func (fakeRates) CreateRateEntry(context.Context, *store.RateEntry) error        { return nil }
-func (fakeRates) DeleteRateEntry(context.Context, int) error                     { return nil }
+func (fakeRates) CreateRateTable(context.Context, *store.RateTable) error { return nil }
+func (fakeRates) CreateRateEntry(context.Context, *store.RateEntry) error { return nil }
+func (fakeRates) DeleteRateEntry(context.Context, int) error              { return nil }
 
 func TestPriceLongestPrefix(t *testing.T) {
 	r := fakeRates{table: &store.RateTable{ID: 1, TenantID: "t1", Active: true}, entries: []store.RateEntry{
