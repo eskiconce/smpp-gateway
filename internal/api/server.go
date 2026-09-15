@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/eskiconce/smpp-gateway/internal/auth"
 	"github.com/eskiconce/smpp-gateway/internal/billing"
 	"github.com/eskiconce/smpp-gateway/internal/config"
 	"github.com/eskiconce/smpp-gateway/internal/pipeline"
@@ -22,17 +23,43 @@ type repos interface {
 	store.TenantRepo
 	store.RateRepo
 	store.LedgerRepo
+	store.UserRepo
+	store.ConnectorRepo
+	store.GroupRepo
+	store.RuleRepo
+	store.StatsRepo
 }
 
 type Server struct {
-	cfg     config.Config
-	p       *pipeline.Pipeline
-	repo    repos
-	billing *billing.Service
+	cfg             config.Config
+	p               *pipeline.Pipeline
+	repo            repos
+	billing         *billing.Service
+	jwtSecret       []byte
+	jwtTTL          time.Duration
+	metricsInterval time.Duration
+	users           store.UserRepo
+	conns           store.ConnectorRepo
+	groups          store.GroupRepo
+	rules           store.RuleRepo
+	stats           store.StatsRepo
 }
 
 func New(cfg config.Config, p *pipeline.Pipeline, repo repos) *Server {
-	return &Server{cfg: cfg, p: p, repo: repo, billing: billing.New(repo, repo, repo)}
+	return &Server{
+		cfg:             cfg,
+		p:               p,
+		repo:            repo,
+		billing:         billing.New(repo, repo, repo),
+		jwtSecret:       []byte(cfg.JWTSecret),
+		jwtTTL:          cfg.JWTTTL,
+		metricsInterval: cfg.MetricsInterval,
+		users:           repo,
+		conns:           repo,
+		groups:          repo,
+		rules:           repo,
+		stats:           repo,
+	}
 }
 
 type submitReq struct {
@@ -52,29 +79,112 @@ func (s *Server) mux() *http.ServeMux {
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte("ok"))
 	})
+	mux.HandleFunc("POST /api/v1/auth/login", s.handleLogin)
 	mux.HandleFunc("POST /api/v1/messages", s.handleSubmit)
 	mux.HandleFunc("GET /api/v1/messages/{id}", s.handleGetMessage)
 
-	mux.HandleFunc("GET /api/v1/admin/webhooks", s.handleListWebhooks)
-	mux.HandleFunc("POST /api/v1/admin/webhooks", s.handleCreateWebhook)
-	mux.HandleFunc("PUT /api/v1/admin/webhooks/{id}", s.handleUpdateWebhook)
-	mux.HandleFunc("DELETE /api/v1/admin/webhooks/{id}", s.handleDeleteWebhook)
+	mux.HandleFunc("GET /api/v1/metrics", s.withAuth("viewer", s.handleMetrics))
+	mux.HandleFunc("GET /api/v1/metrics/stream", s.withAuth("viewer", s.handleMetricsStream))
 
-	mux.HandleFunc("GET /api/v1/admin/tenants", s.handleListTenants)
-	mux.HandleFunc("POST /api/v1/admin/tenants", s.handleCreateTenant)
-	mux.HandleFunc("GET /api/v1/admin/tenants/{id}", s.handleGetTenant)
-	mux.HandleFunc("POST /api/v1/admin/tenants/{id}/credit", s.handleCreditTenant)
-	mux.HandleFunc("GET /api/v1/admin/tenants/{id}/transactions", s.handleListTransactions)
+	mux.HandleFunc("GET /api/v1/admin/messages", s.withAuth("viewer", s.handleListMessages))
 
-	mux.HandleFunc("GET /api/v1/admin/rate-tables", s.handleListRateTables)
-	mux.HandleFunc("POST /api/v1/admin/rate-tables", s.handleCreateRateTable)
-	mux.HandleFunc("GET /api/v1/admin/rate-tables/{id}/entries", s.handleListRateEntries)
-	mux.HandleFunc("POST /api/v1/admin/rate-tables/{id}/entries", s.handleCreateRateEntry)
-	mux.HandleFunc("DELETE /api/v1/admin/rate-entries/{id}", s.handleDeleteRateEntry)
+	mux.HandleFunc("GET /api/v1/admin/webhooks", s.withAuth("viewer", s.handleListWebhooks))
+	mux.HandleFunc("POST /api/v1/admin/webhooks", s.withAuth("admin", s.handleCreateWebhook))
+	mux.HandleFunc("PUT /api/v1/admin/webhooks/{id}", s.withAuth("admin", s.handleUpdateWebhook))
+	mux.HandleFunc("DELETE /api/v1/admin/webhooks/{id}", s.withAuth("admin", s.handleDeleteWebhook))
+
+	mux.HandleFunc("GET /api/v1/admin/tenants", s.withAuth("viewer", s.handleListTenants))
+	mux.HandleFunc("POST /api/v1/admin/tenants", s.withAuth("admin", s.handleCreateTenant))
+	mux.HandleFunc("GET /api/v1/admin/tenants/{id}", s.withAuth("viewer", s.handleGetTenant))
+	mux.HandleFunc("POST /api/v1/admin/tenants/{id}/credit", s.withAuth("admin", s.handleCreditTenant))
+	mux.HandleFunc("GET /api/v1/admin/tenants/{id}/transactions", s.withAuth("viewer", s.handleListTransactions))
+
+	mux.HandleFunc("GET /api/v1/admin/rate-tables", s.withAuth("viewer", s.handleListRateTables))
+	mux.HandleFunc("POST /api/v1/admin/rate-tables", s.withAuth("admin", s.handleCreateRateTable))
+	mux.HandleFunc("GET /api/v1/admin/rate-tables/{id}/entries", s.withAuth("viewer", s.handleListRateEntries))
+	mux.HandleFunc("POST /api/v1/admin/rate-tables/{id}/entries", s.withAuth("admin", s.handleCreateRateEntry))
+	mux.HandleFunc("DELETE /api/v1/admin/rate-entries/{id}", s.withAuth("admin", s.handleDeleteRateEntry))
+
+	mux.HandleFunc("GET /api/v1/admin/connectors", s.withAuth("viewer", s.handleListConnectors))
+	mux.HandleFunc("POST /api/v1/admin/connectors", s.withAuth("admin", s.handleCreateConnector))
+	mux.HandleFunc("PUT /api/v1/admin/connectors/{id}", s.withAuth("admin", s.handleUpdateConnector))
+	mux.HandleFunc("DELETE /api/v1/admin/connectors/{id}", s.withAuth("admin", s.handleDeleteConnector))
+	mux.HandleFunc("POST /api/v1/admin/connectors/{id}/test", s.withAuth("admin", s.handleTestConnector))
+
+	mux.HandleFunc("GET /api/v1/admin/groups", s.withAuth("viewer", s.handleListGroups))
+	mux.HandleFunc("POST /api/v1/admin/groups", s.withAuth("admin", s.handleCreateGroup))
+	mux.HandleFunc("DELETE /api/v1/admin/groups/{id}", s.withAuth("admin", s.handleDeleteGroup))
+	mux.HandleFunc("PUT /api/v1/admin/groups/{id}/members", s.withAuth("admin", s.handleSetGroupMembers))
+
+	mux.HandleFunc("GET /api/v1/admin/routing-rules", s.withAuth("viewer", s.handleListRules))
+	mux.HandleFunc("POST /api/v1/admin/routing-rules", s.withAuth("admin", s.handleCreateRule))
+	mux.HandleFunc("DELETE /api/v1/admin/routing-rules/{id}", s.withAuth("admin", s.handleDeleteRule))
+	mux.HandleFunc("PUT /api/v1/admin/routing-rules/{id}/priority", s.withAuth("admin", s.handleUpdateRulePriority))
+
+	mux.HandleFunc("GET /api/v1/admin/users", s.withAuth("superadmin", s.handleListUsers))
+	mux.HandleFunc("POST /api/v1/admin/users", s.withAuth("superadmin", s.handleCreateUser))
+	mux.HandleFunc("DELETE /api/v1/admin/users/{id}", s.withAuth("superadmin", s.handleDeleteUser))
 	return mux
 }
 
 func (s *Server) Handler() http.Handler { return s.mux() }
+
+type loginReq struct {
+	Username string `json:"username"`
+	Password string `json:"password"`
+}
+
+func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
+	var req loginReq
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "json invalido", http.StatusBadRequest)
+		return
+	}
+	u, err := s.users.GetUserByUsername(r.Context(), req.Username)
+	if err != nil || !auth.VerifyPassword(u.PasswordHash, req.Password) {
+		http.Error(w, "credenciales invalidas", http.StatusUnauthorized)
+		return
+	}
+	claims := auth.Claims{
+		Username: u.Username,
+		Role:     u.Role,
+		Exp:      time.Now().Add(s.jwtTTL).Unix(),
+	}
+	token, err := auth.Sign(s.jwtSecret, claims)
+	if err != nil {
+		http.Error(w, "no se pudo generar token", http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, 200, map[string]any{
+		"token": token, "username": u.Username, "role": u.Role,
+	})
+}
+
+func (s *Server) withAuth(minRole string, next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		token := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+		claims, err := auth.Verify(s.jwtSecret, token)
+		if err != nil {
+			http.Error(w, "no autorizado", http.StatusUnauthorized)
+			return
+		}
+		if !auth.RequireRole(claims.Role, minRole) {
+			http.Error(w, "permiso insuficiente", http.StatusForbidden)
+			return
+		}
+		next(w, r)
+	}
+}
+
+func writeJSON(w http.ResponseWriter, status int, v any) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(v)
+}
+
+func readID(r *http.Request) (int, error) {
+	return strconv.Atoi(r.PathValue("id"))
+}
 
 func (s *Server) handleSubmit(w http.ResponseWriter, r *http.Request) {
 	key := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")

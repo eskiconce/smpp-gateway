@@ -1,0 +1,21 @@
+* { box-sizing: border-box; }
+body { margin: 0; font-family: system-ui, sans-serif; color: #222; }
+.layout { display: flex; min-height: 100vh; }
+.sidebar { width: 220px; background: #1f2937; color: #fff; padding: 16px; }
+.sidebar h1 { font-size: 18px; margin: 0 0 16px; }
+.sidebar nav a { display: block; color: #d1d5db; text-decoration: none; padding: 8px; }
+.sidebar nav a.active, .sidebar nav a:hover { background: #374151; color: #fff; }
+.content { flex: 1; padding: 24px; }
+.login { display: flex; height: 100vh; align-items: center; justify-content: center; }
+.login form { display: flex; flex-direction: column; width: 280px; gap: 8px; }
+input, button, select { padding: 8px; font-size: 14px; }
+table { border-collapse: collapse; width: 100%; }
+th, td { border: 1px solid #e5e7eb; padding: 6px 8px; text-align: left; }
+.error { color: #dc2626; }
+.card { border: 1px solid #e5e7eb; border-radius: 8px; padding: 12px; margin-bottom: 16px; }
+.card h2 { margin-top: 0; }
+.toolbar { display: flex; gap: 8px; margin-bottom: 12px; flex-wrap: wrap; }
+.kpis { display: flex; gap: 16px; margin-bottom: 16px; flex-wrap: wrap; }
+.kpi { flex: 1; min-width: 140px; background: #f9fafb; border: 1px solid #e5e7eb; border-radius: 8px; padding: 12px; }
+.kpi b { font-size: 24px; display: block; }
+.drag-row { cursor: grab; }

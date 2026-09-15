@@ -3,6 +3,8 @@ package store
 import (
 	"context"
 	"errors"
+	"fmt"
+	"strings"
 	"time"
 
 	"github.com/eskiconce/smpp-gateway/internal/router"
@@ -432,4 +434,357 @@ func (r *PGRepo) ListGroups(ctx context.Context) ([]router.Group, error) {
 		groups = append(groups, *groupMap[id])
 	}
 	return groups, nil
+}
+
+func nullIfEmpty(v string) any {
+	if v == "" {
+		return nil
+	}
+	return v
+}
+
+func nullIntIfZero(v int) any {
+	if v == 0 {
+		return nil
+	}
+	return v
+}
+
+func itoa(i int) string { return fmt.Sprintf("%d", i) }
+
+func (r *PGRepo) ListUsers(ctx context.Context) ([]User, error) {
+	rows, err := r.pool.Query(ctx, `SELECT id, username, password_hash, role, COALESCE(tenant_id,''), created_at FROM users ORDER BY id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	users := []User{}
+	for rows.Next() {
+		var u User
+		if err := rows.Scan(&u.ID, &u.Username, &u.PasswordHash, &u.Role, &u.TenantID, &u.CreatedAt); err != nil {
+			return nil, err
+		}
+		users = append(users, u)
+	}
+	return users, rows.Err()
+}
+
+func (r *PGRepo) GetUserByUsername(ctx context.Context, username string) (*User, error) {
+	var u User
+	err := r.pool.QueryRow(ctx,
+		`SELECT id, username, password_hash, role, COALESCE(tenant_id,''), created_at FROM users WHERE username=$1`,
+		username).
+		Scan(&u.ID, &u.Username, &u.PasswordHash, &u.Role, &u.TenantID, &u.CreatedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &u, nil
+}
+
+func (r *PGRepo) CreateUser(ctx context.Context, u *User) error {
+	return r.pool.QueryRow(ctx,
+		`INSERT INTO users (username, password_hash, role, tenant_id) VALUES ($1,$2,$3,$4) RETURNING id, created_at`,
+		u.Username, u.PasswordHash, u.Role, nullIfEmpty(u.TenantID)).
+		Scan(&u.ID, &u.CreatedAt)
+}
+
+func (r *PGRepo) DeleteUser(ctx context.Context, id int) error {
+	tag, err := r.pool.Exec(ctx, `DELETE FROM users WHERE id=$1`, id)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+const connectorCols = `id, name, type, host, port, system_id, password, bind_mode, source_addr,
+	source_ton, source_npi, dest_ton, dest_npi, concurrency, max_message_per_second, enquire_link_interval, tls, enabled`
+
+func scanConnectors(rows pgx.Rows) ([]Connector, error) {
+	list := []Connector{}
+	for rows.Next() {
+		var c Connector
+		if err := rows.Scan(&c.ID, &c.Name, &c.Type, &c.Host, &c.Port, &c.SystemID, &c.Password,
+			&c.BindMode, &c.SourceAddr, &c.SourceTON, &c.SourceNPI, &c.DestTON, &c.DestNPI,
+			&c.Concurrency, &c.MaxMsgPerSec, &c.EnquireLinkInterval, &c.TLS, &c.Enabled); err != nil {
+			return nil, err
+		}
+		list = append(list, c)
+	}
+	return list, rows.Err()
+}
+
+func (r *PGRepo) ListConnectors(ctx context.Context) ([]Connector, error) {
+	rows, err := r.pool.Query(ctx, `SELECT `+connectorCols+` FROM connectors ORDER BY id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return scanConnectors(rows)
+}
+
+func (r *PGRepo) GetConnector(ctx context.Context, id int) (*Connector, error) {
+	rows, err := r.pool.Query(ctx, `SELECT `+connectorCols+` FROM connectors WHERE id=$1`, id)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	list, err := scanConnectors(rows)
+	if err != nil {
+		return nil, err
+	}
+	if len(list) == 0 {
+		return nil, ErrNotFound
+	}
+	return &list[0], nil
+}
+
+func (r *PGRepo) CreateConnector(ctx context.Context, c *Connector) (int, error) {
+	err := r.pool.QueryRow(ctx,
+		`INSERT INTO connectors (name, type, host, port, system_id, password, bind_mode, source_addr,
+		source_ton, source_npi, dest_ton, dest_npi, concurrency, max_message_per_second, enquire_link_interval, tls, enabled)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17) RETURNING id`,
+		c.Name, c.Type, c.Host, c.Port, c.SystemID, c.Password, c.BindMode, c.SourceAddr,
+		c.SourceTON, c.SourceNPI, c.DestTON, c.DestNPI, c.Concurrency, c.MaxMsgPerSec, c.EnquireLinkInterval, c.TLS, c.Enabled).
+		Scan(&c.ID)
+	return c.ID, err
+}
+
+func (r *PGRepo) UpdateConnector(ctx context.Context, c *Connector) error {
+	tag, err := r.pool.Exec(ctx,
+		`UPDATE connectors SET name=$2, type=$3, host=$4, port=$5, system_id=$6, password=$7, bind_mode=$8,
+		source_addr=$9, source_ton=$10, source_npi=$11, dest_ton=$12, dest_npi=$13, concurrency=$14,
+		max_message_per_second=$15, enquire_link_interval=$16, tls=$17, enabled=$18 WHERE id=$1`,
+		c.ID, c.Name, c.Type, c.Host, c.Port, c.SystemID, c.Password, c.BindMode, c.SourceAddr,
+		c.SourceTON, c.SourceNPI, c.DestTON, c.DestNPI, c.Concurrency, c.MaxMsgPerSec, c.EnquireLinkInterval, c.TLS, c.Enabled)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+func (r *PGRepo) DeleteConnector(ctx context.Context, id int) error {
+	tag, err := r.pool.Exec(ctx, `DELETE FROM connectors WHERE id=$1`, id)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+func (r *PGRepo) CreateGroup(ctx context.Context, name string) (int, error) {
+	var id int
+	err := r.pool.QueryRow(ctx, `INSERT INTO groups (name) VALUES ($1) RETURNING id`, name).Scan(&id)
+	return id, err
+}
+
+func (r *PGRepo) DeleteGroup(ctx context.Context, id int) error {
+	tag, err := r.pool.Exec(ctx, `DELETE FROM groups WHERE id=$1`, id)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+func (r *PGRepo) SetGroupMembers(ctx context.Context, groupID int, members []router.GroupMember) error {
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+	if _, err := tx.Exec(ctx, `DELETE FROM group_members WHERE group_id=$1`, groupID); err != nil {
+		return err
+	}
+	for _, m := range members {
+		if m.Weight < 1 {
+			continue
+		}
+		if _, err := tx.Exec(ctx,
+			`INSERT INTO group_members (group_id, connector_id, weight) VALUES ($1,$2,$3)`,
+			groupID, m.ConnectorID, m.Weight); err != nil {
+			return err
+		}
+	}
+	return tx.Commit(ctx)
+}
+
+func (r *PGRepo) CreateRoutingRule(ctx context.Context, rule router.Rule) (int, error) {
+	var id int
+	err := r.pool.QueryRow(ctx,
+		`INSERT INTO routing_rules (priority, tenant_id, "from", prefix, regex, routing_tag, connector_id, group_id)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id`,
+		rule.Priority, nullIfEmpty(rule.TenantID), rule.From, rule.Prefix, rule.Regex, rule.RoutingTag,
+		rule.ConnectorID, nullIntIfZero(rule.GroupID)).Scan(&id)
+	return id, err
+}
+
+func (r *PGRepo) DeleteRoutingRule(ctx context.Context, id int) error {
+	tag, err := r.pool.Exec(ctx, `DELETE FROM routing_rules WHERE id=$1`, id)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+func (r *PGRepo) UpdateRoutingRulePriority(ctx context.Context, id, priority int) error {
+	tag, err := r.pool.Exec(ctx, `UPDATE routing_rules SET priority=$2 WHERE id=$1`, id, priority)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+func (r *PGRepo) ListMessages(ctx context.Context, f MessageFilter) ([]Message, int, error) {
+	where, args := []string{}, []any{}
+	add := func(cond string, v any) {
+		args = append(args, v)
+		where = append(where, fmt.Sprintf("%s=$%d", cond, len(args)))
+	}
+	if f.TenantID != "" {
+		add("tenant_id", f.TenantID)
+	}
+	if f.Msisdn != "" {
+		add("msisdn", f.Msisdn)
+	}
+	if f.State != "" {
+		add("state", f.State)
+	}
+	if f.ConnectorID != 0 {
+		add("connector_id", f.ConnectorID)
+	}
+	whereSQL := ""
+	if len(where) > 0 {
+		whereSQL = " WHERE " + strings.Join(where, " AND ")
+	}
+	var total int
+	if err := r.pool.QueryRow(ctx, `SELECT count(*) FROM messages`+whereSQL, args...).Scan(&total); err != nil {
+		return nil, 0, err
+	}
+	limit, offset := 50, 0
+	if f.Limit > 0 {
+		limit = f.Limit
+	}
+	if limit > 500 {
+		limit = 500
+	}
+	if f.Offset > 0 {
+		offset = f.Offset
+	}
+	q := `SELECT id, tenant_id, source_addr, msisdn, text, segments, connector_id, state, try_count,
+			smsc_msgid, route_id, amount, created_at, updated_at FROM messages` + whereSQL +
+		` ORDER BY created_at DESC, id LIMIT $` + itoa(len(args)+1) + ` OFFSET $` + itoa(len(args)+2)
+	args = append(args, limit, offset)
+	rows, err := r.pool.Query(ctx, q, args...)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer rows.Close()
+	items := []Message{}
+	for rows.Next() {
+		var m Message
+		var createdAt, updatedAt time.Time
+		var routeID *int
+		var amount *float64
+		if err := rows.Scan(&m.ID, &m.TenantID, &m.SourceAddr, &m.Msisdn, &m.Text, &m.Segments,
+			&m.ConnectorID, &m.State, &m.TryCount, &m.SmscMsgid, &routeID, &amount,
+			&createdAt, &updatedAt); err != nil {
+			return nil, 0, err
+		}
+		if routeID != nil {
+			m.RouteID = *routeID
+		}
+		if amount != nil {
+			m.Amount = *amount
+		}
+		m.CreatedAt, m.UpdatedAt = createdAt, updatedAt
+		items = append(items, m)
+	}
+	return items, total, rows.Err()
+}
+
+func (r *PGRepo) CountByState(ctx context.Context, tenantID string, since time.Time) (map[string]int, error) {
+	where := r.sinceAndTenant("", tenantID, since)
+	rows, err := r.pool.Query(ctx, `SELECT state, count(*) FROM messages`+where.cond+` GROUP BY state`, where.args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]int{}
+	for rows.Next() {
+		var st string
+		var n int
+		if err := rows.Scan(&st, &n); err != nil {
+			return nil, err
+		}
+		out[st] = n
+	}
+	return out, rows.Err()
+}
+
+func (r *PGRepo) CountByConnector(ctx context.Context, tenantID string, since time.Time) ([]ConnectorCount, error) {
+	where := r.sinceAndTenant("", tenantID, since)
+	rows, err := r.pool.Query(ctx, `SELECT connector_id, count(*) FROM messages`+where.cond+
+		` GROUP BY connector_id ORDER BY connector_id`, where.args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []ConnectorCount{}
+	for rows.Next() {
+		var cc ConnectorCount
+		if err := rows.Scan(&cc.ConnectorID, &cc.Count); err != nil {
+			return nil, err
+		}
+		out = append(out, cc)
+	}
+	return out, rows.Err()
+}
+
+func (r *PGRepo) CountMessages(ctx context.Context, tenantID string, since time.Time) (int, error) {
+	where := r.sinceAndTenant("", tenantID, since)
+	var n int
+	err := r.pool.QueryRow(ctx, `SELECT count(*) FROM messages`+where.cond, where.args...).Scan(&n)
+	return n, err
+}
+
+type whereClause struct {
+	cond string
+	args []any
+}
+
+func (r *PGRepo) sinceAndTenant(base, tenantID string, since time.Time) whereClause {
+	var conds []string
+	var args []any
+	if tenantID != "" {
+		args = append(args, tenantID)
+		conds = append(conds, "tenant_id = $"+itoa(len(args)))
+	}
+	if !since.IsZero() {
+		args = append(args, since)
+		conds = append(conds, "created_at >= $"+itoa(len(args)))
+	}
+	w := ""
+	if len(conds) > 0 {
+		w = " WHERE " + strings.Join(conds, " AND ")
+	}
+	return whereClause{cond: w, args: args}
 }

@@ -11,11 +11,13 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/eskiconce/smpp-gateway/internal/api"
+	"github.com/eskiconce/smpp-gateway/internal/auth"
 	"github.com/eskiconce/smpp-gateway/internal/billing"
 	"github.com/eskiconce/smpp-gateway/internal/config"
 	"github.com/eskiconce/smpp-gateway/internal/dlr"
@@ -298,3 +300,44 @@ func TestE2ESMPPSubmitToDeliverSM(t *testing.T) {
 type noBackoffType struct{}
 
 func noBackoff(int) time.Duration { return 0 }
+
+func TestAdminLoginYCRUD(t *testing.T) {
+	repo := store.NewMemory()
+	hash, err := auth.HashPassword("s3cret")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = repo.CreateUser(context.Background(), &store.User{
+		Username: "admin", PasswordHash: hash, Role: "superadmin",
+	})
+	cfg := apiConfig()
+	cfg.JWTSecret = "secreto-e2e"
+	cfg.JWTTTL = time.Hour
+	srv := api.New(cfg, nil, repo)
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+
+	loginBody := strings.NewReader(`{"username":"admin","password":"s3cret"}`)
+	resp, err := http.Post(ts.URL+"/api/v1/auth/login", "application/json", loginBody)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != 200 {
+		t.Fatalf("login %d", resp.StatusCode)
+	}
+	var tok struct{ Token string `json:"token"` }
+	json.NewDecoder(resp.Body).Decode(&tok)
+	resp.Body.Close()
+
+	req, _ := http.NewRequest("GET", ts.URL+"/api/v1/admin/messages", nil)
+	req.Header.Set("Authorization", "Bearer "+tok.Token)
+	resp2, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, _ := io.ReadAll(resp2.Body)
+	resp2.Body.Close()
+	if resp2.StatusCode != 200 || !strings.Contains(string(b), `"total":`) {
+		t.Fatalf("messages %d: %s", resp2.StatusCode, string(b))
+	}
+}

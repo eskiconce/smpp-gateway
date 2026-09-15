@@ -3,9 +3,14 @@ package store
 import (
 	"context"
 	"errors"
+	"fmt"
 	"math"
+	"sort"
+	"strings"
 	"sync"
 	"time"
+
+	"github.com/eskiconce/smpp-gateway/internal/router"
 )
 
 var ErrNotFound = errors.New("not found")
@@ -23,6 +28,14 @@ type MemoryRepo struct {
 	transactions []Transaction
 	nextTxnID    int64
 	debitedMsg   map[string]bool
+	users        []User
+	connectors   []Connector
+	groups       []router.Group
+	rules        []router.Rule
+	nextID       int
+	nextConnID   int
+	nextGroupID  int
+	nextRuleID   int
 }
 
 func NewMemory() *MemoryRepo {
@@ -374,4 +387,289 @@ func (r *MemoryRepo) ListTransactions(_ context.Context, tenantID string, limit 
 
 func round4(v float64) float64 {
 	return math.Round(v*10000) / 10000
+}
+
+var _ UserRepo = (*MemoryRepo)(nil)
+var _ ConnectorRepo = (*MemoryRepo)(nil)
+var _ GroupRepo = (*MemoryRepo)(nil)
+var _ RuleRepo = (*MemoryRepo)(nil)
+var _ StatsRepo = (*MemoryRepo)(nil)
+
+func (r *MemoryRepo) ListUsers(_ context.Context) ([]User, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	out := make([]User, len(r.users))
+	copy(out, r.users)
+	return out, nil
+}
+
+func (r *MemoryRepo) GetUserByUsername(_ context.Context, username string) (*User, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for i := range r.users {
+		if r.users[i].Username == username {
+			u := r.users[i]
+			return &u, nil
+		}
+	}
+	return nil, ErrNotFound
+}
+
+func (r *MemoryRepo) CreateUser(_ context.Context, u *User) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if u == nil {
+		return fmt.Errorf("user nil")
+	}
+	for _, x := range r.users {
+		if x.Username == u.Username {
+			return fmt.Errorf("username ya existe")
+		}
+	}
+	r.nextID++
+	u.ID = r.nextID
+	u.CreatedAt = time.Now()
+	r.users = append(r.users, *u)
+	return nil
+}
+
+func (r *MemoryRepo) DeleteUser(_ context.Context, id int) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for i := range r.users {
+		if r.users[i].ID == id {
+			r.users = append(r.users[:i], r.users[i+1:]...)
+			return nil
+		}
+	}
+	return ErrNotFound
+}
+
+func (r *MemoryRepo) ListConnectors(_ context.Context) ([]Connector, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	out := make([]Connector, len(r.connectors))
+	copy(out, r.connectors)
+	return out, nil
+}
+
+func (r *MemoryRepo) GetConnector(_ context.Context, id int) (*Connector, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for i := range r.connectors {
+		if r.connectors[i].ID == id {
+			c := r.connectors[i]
+			return &c, nil
+		}
+	}
+	return nil, ErrNotFound
+}
+
+func (r *MemoryRepo) CreateConnector(_ context.Context, c *Connector) (int, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.nextConnID++
+	c.ID = r.nextConnID
+	r.connectors = append(r.connectors, *c)
+	return c.ID, nil
+}
+
+func (r *MemoryRepo) UpdateConnector(_ context.Context, c *Connector) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for i := range r.connectors {
+		if r.connectors[i].ID == c.ID {
+			r.connectors[i] = *c
+			return nil
+		}
+	}
+	return ErrNotFound
+}
+
+func (r *MemoryRepo) DeleteConnector(_ context.Context, id int) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for i := range r.connectors {
+		if r.connectors[i].ID == id {
+			r.connectors = append(r.connectors[:i], r.connectors[i+1:]...)
+			return nil
+		}
+	}
+	return ErrNotFound
+}
+
+func (r *MemoryRepo) CreateGroup(_ context.Context, name string) (int, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.nextGroupID++
+	r.groups = append(r.groups, router.Group{ID: r.nextGroupID, Name: name})
+	return r.nextGroupID, nil
+}
+
+func (r *MemoryRepo) DeleteGroup(_ context.Context, id int) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for i := range r.groups {
+		if r.groups[i].ID == id {
+			r.groups = append(r.groups[:i], r.groups[i+1:]...)
+			return nil
+		}
+	}
+	return ErrNotFound
+}
+
+func (r *MemoryRepo) SetGroupMembers(_ context.Context, groupID int, members []router.GroupMember) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for i := range r.groups {
+		if r.groups[i].ID == groupID {
+			r.groups[i].Members = append([]router.GroupMember(nil), members...)
+			return nil
+		}
+	}
+	return ErrNotFound
+}
+
+func (r *MemoryRepo) ListGroups(_ context.Context) ([]router.Group, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	out := make([]router.Group, len(r.groups))
+	copy(out, r.groups)
+	return out, nil
+}
+
+func (r *MemoryRepo) ListRoutingRules(_ context.Context) ([]router.Rule, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	out := make([]router.Rule, len(r.rules))
+	copy(out, r.rules)
+	return out, nil
+}
+
+func (r *MemoryRepo) CreateRoutingRule(_ context.Context, rule router.Rule) (int, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.nextRuleID++
+	rule.ID = r.nextRuleID
+	r.rules = append(r.rules, rule)
+	return rule.ID, nil
+}
+
+func (r *MemoryRepo) DeleteRoutingRule(_ context.Context, id int) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for i := range r.rules {
+		if r.rules[i].ID == id {
+			r.rules = append(r.rules[:i], r.rules[i+1:]...)
+			return nil
+		}
+	}
+	return ErrNotFound
+}
+
+func (r *MemoryRepo) UpdateRoutingRulePriority(_ context.Context, id, priority int) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for i := range r.rules {
+		if r.rules[i].ID == id {
+			r.rules[i].Priority = priority
+			return nil
+		}
+	}
+	return ErrNotFound
+}
+
+func (r *MemoryRepo) ListMessages(_ context.Context, f MessageFilter) ([]Message, int, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	var matched []Message
+	for _, m := range r.msgs {
+		if f.TenantID != "" && m.TenantID != f.TenantID {
+			continue
+		}
+		if f.Msisdn != "" && !strings.Contains(m.Msisdn, f.Msisdn) {
+			continue
+		}
+		if f.State != "" && m.State != f.State {
+			continue
+		}
+		if f.ConnectorID != 0 && m.ConnectorID != f.ConnectorID {
+			continue
+		}
+		matched = append(matched, *m)
+	}
+	sort.SliceStable(matched, func(i, j int) bool { return matched[i].CreatedAt.After(matched[j].CreatedAt) })
+	total := len(matched)
+	limit, offset := 50, 0
+	if f.Limit > 0 {
+		limit = f.Limit
+	}
+	if limit > 500 {
+		limit = 500
+	}
+	if f.Offset > 0 {
+		offset = f.Offset
+	}
+	if offset > total {
+		offset = total
+	}
+	end := offset + limit
+	if end > total {
+		end = total
+	}
+	items := append([]Message(nil), matched[offset:end]...)
+	return items, total, nil
+}
+
+func (r *MemoryRepo) CountByState(_ context.Context, tenantID string, since time.Time) (map[string]int, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	out := map[string]int{}
+	for _, m := range r.msgs {
+		if tenantID != "" && m.TenantID != tenantID {
+			continue
+		}
+		if !since.IsZero() && m.CreatedAt.Before(since) {
+			continue
+		}
+		out[m.State]++
+	}
+	return out, nil
+}
+
+func (r *MemoryRepo) CountByConnector(_ context.Context, tenantID string, since time.Time) ([]ConnectorCount, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	agg := map[int]int{}
+	for _, m := range r.msgs {
+		if tenantID != "" && m.TenantID != tenantID {
+			continue
+		}
+		if !since.IsZero() && m.CreatedAt.Before(since) {
+			continue
+		}
+		agg[m.ConnectorID]++
+	}
+	out := []ConnectorCount{}
+	for id, n := range agg {
+		out = append(out, ConnectorCount{ConnectorID: id, Count: n})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].ConnectorID < out[j].ConnectorID })
+	return out, nil
+}
+
+func (r *MemoryRepo) CountMessages(_ context.Context, tenantID string, since time.Time) (int, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	n := 0
+	for _, m := range r.msgs {
+		if tenantID != "" && m.TenantID != tenantID {
+			continue
+		}
+		if !since.IsZero() && m.CreatedAt.Before(since) {
+			continue
+		}
+		n++
+	}
+	return n, nil
 }
