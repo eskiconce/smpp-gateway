@@ -18,13 +18,14 @@ type Router interface {
 }
 
 type Outgoing struct {
-	TenantID   string
-	SourceAddr string
-	Msisdn     string
-	Text       string
-	RoutingTag string
-	Priority   int
-	DataCoding int
+	TenantID      string
+	SourceAddr    string
+	Msisdn        string
+	Text          string
+	RoutingTag    string
+	Priority      int
+	DataCoding    int
+	SourceChannel string
 }
 
 type Biller interface {
@@ -112,7 +113,8 @@ func (p *Pipeline) Submit(ctx context.Context, out Outgoing) (string, int, error
 	msg := &store.Message{
 		ID: msgID, TenantID: out.TenantID, SourceAddr: out.SourceAddr,
 		Msisdn: out.Msisdn, Text: text, Segments: segments,
-		ConnectorID: res.Connectors[0], RouteID: res.RuleID, State: "buffered", CreatedAt: time.Now(),
+		ConnectorID: res.Connectors[0], RouteID: res.RuleID, State: "buffered",
+		SourceChannel: out.SourceChannel, CreatedAt: time.Now(),
 		Amount: amount,
 	}
 	if err := p.repo.CreateMessage(ctx, msg); err != nil {

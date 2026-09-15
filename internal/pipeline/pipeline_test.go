@@ -108,3 +108,21 @@ func TestSubmitSaldoInsuficiente(t *testing.T) {
 		t.Fatalf("esperaba ErrInsufficientBalance, got %v", err)
 	}
 }
+
+func TestSubmitSetsSourceChannel(t *testing.T) {
+	repo := store.NewMemory()
+	q := queue.NewMemory()
+	p := NewPipeline(repo, q, &fixedRouter{ids: []int{1}})
+	ctx := context.Background()
+	id, _, err := p.Submit(ctx, Outgoing{
+		TenantID: "t1", Msisdn: "569123", Text: "hola",
+		SourceAddr: "1234", SourceChannel: "smpp",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	m, _ := repo.GetMessage(ctx, id)
+	if m.SourceChannel != "smpp" {
+		t.Fatalf("source_channel=%q", m.SourceChannel)
+	}
+}
