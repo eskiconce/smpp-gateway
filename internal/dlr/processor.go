@@ -9,6 +9,7 @@ import (
 
 type Event struct {
 	TenantID, MessageID, SmscMsgid, Msisdn, State string
+	SourceChannel                                 string
 	Timestamp                                     time.Time
 }
 
@@ -50,7 +51,8 @@ func (p *Processor) Handle(ctx context.Context, smscMsgid, stat string) error {
 	if p.notifier != nil {
 		go p.notifier.Notify(context.Background(), Event{
 			TenantID: m.TenantID, MessageID: m.ID, SmscMsgid: smscMsgid,
-			Msisdn: m.Msisdn, State: state, Timestamp: time.Now(),
+			Msisdn: m.Msisdn, State: state, SourceChannel: m.SourceChannel,
+			Timestamp: time.Now(),
 		})
 	}
 	return nil

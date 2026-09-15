@@ -118,3 +118,22 @@ func TestHandleWithoutCorrelationIsNoop(t *testing.T) {
 		t.Fatalf("state=%q n=%d", m.State, n.count())
 	}
 }
+
+func TestHandlePopulatesSourceChannel(t *testing.T) {
+	p, repo, n := newTestProcessor(t)
+	ctx := context.Background()
+	_ = repo.CreateMessage(ctx, &store.Message{
+		ID: "m-smpp", TenantID: "t1", Msisdn: "569123", Text: "hola",
+		SourceChannel: "smpp", State: "accepted",
+	})
+	p.Register(ctx, "smsc-2", "m-smpp")
+	p.Handle(ctx, "smsc-2", "DELIVRD")
+	deadline := time.Now().Add(time.Second)
+	for n.count() == 0 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	ev := n.last()
+	if ev.SourceChannel != "smpp" {
+		t.Fatalf("source_channel=%q", ev.SourceChannel)
+	}
+}
