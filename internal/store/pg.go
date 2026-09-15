@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"github.com/eskiconce/smpp-gateway/internal/router"
@@ -153,6 +154,233 @@ func (r *PGRepo) ListRoutingRules(ctx context.Context) ([]router.Rule, error) {
 		rules = append(rules, rl)
 	}
 	return rules, rows.Err()
+}
+
+const tenantCols = `id, name, status, coalesce(routing_tag,''), balance, mode, api_key, created_at`
+
+func scanTenants(rows pgx.Rows) ([]Tenant, error) {
+	defer rows.Close()
+	var out []Tenant
+	for rows.Next() {
+		var t Tenant
+		rt := ""
+		if err := rows.Scan(&t.ID, &t.Name, &t.Status, &rt, &t.Balance, &t.Mode, &t.ApiKey, &t.CreatedAt); err != nil {
+			return nil, err
+		}
+		t.RoutingTag = rt
+		out = append(out, t)
+	}
+	return out, rows.Err()
+}
+
+func scanTenant(row pgx.Row) (*Tenant, error) {
+	var t Tenant
+	rt := ""
+	if err := row.Scan(&t.ID, &t.Name, &t.Status, &rt, &t.Balance, &t.Mode, &t.ApiKey, &t.CreatedAt); err != nil {
+		return nil, err
+	}
+	t.RoutingTag = rt
+	return &t, nil
+}
+
+func (r *PGRepo) ListTenants(ctx context.Context) ([]Tenant, error) {
+	rows, err := r.pool.Query(ctx, `SELECT `+tenantCols+` FROM tenants ORDER BY created_at DESC`)
+	if err != nil {
+		return nil, err
+	}
+	return scanTenants(rows)
+}
+
+func (r *PGRepo) GetTenant(ctx context.Context, id string) (*Tenant, error) {
+	row := r.pool.QueryRow(ctx, `SELECT `+tenantCols+` FROM tenants WHERE id=$1`, id)
+	t, err := scanTenant(row)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	return t, err
+}
+
+func (r *PGRepo) GetTenantByAPIKey(ctx context.Context, apiKey string) (*Tenant, error) {
+	row := r.pool.QueryRow(ctx, `SELECT `+tenantCols+` FROM tenants WHERE api_key=$1`, apiKey)
+	t, err := scanTenant(row)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	return t, err
+}
+
+func (r *PGRepo) CreateTenant(ctx context.Context, t *Tenant) error {
+	if t.Mode == "" {
+		t.Mode = "prepaid"
+	}
+	if t.Status == "" {
+		t.Status = "active"
+	}
+	_, err := r.pool.Exec(ctx, `INSERT INTO tenants (id, name, status, routing_tag, balance, mode, api_key)
+		VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+		t.ID, t.Name, t.Status, t.RoutingTag, t.Balance, t.Mode, t.ApiKey)
+	return err
+}
+
+const rateTableCols = `id, tenant_id, name, active, created_at`
+
+const rateEntryCols = `id, table_id, prefix, price, COALESCE(connector_id, 0), valid_from, valid_to`
+
+func scanRateEntries(rows pgx.Rows) ([]RateEntry, error) {
+	defer rows.Close()
+	var out []RateEntry
+	for rows.Next() {
+		var e RateEntry
+		if err := rows.Scan(&e.ID, &e.TableID, &e.Prefix, &e.Price, &e.ConnectorID, &e.ValidFrom, &e.ValidTo); err != nil {
+			return nil, err
+		}
+		out = append(out, e)
+	}
+	return out, rows.Err()
+}
+
+func (r *PGRepo) GetActiveRateTable(ctx context.Context, tenantID string) (*RateTable, error) {
+	var t RateTable
+	err := r.pool.QueryRow(ctx, `SELECT `+rateTableCols+` FROM rate_tables
+		WHERE tenant_id=$1 AND active ORDER BY id LIMIT 1`, tenantID).
+		Scan(&t.ID, &t.TenantID, &t.Name, &t.Active, &t.CreatedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &t, nil
+}
+
+func (r *PGRepo) ListRateTables(ctx context.Context, tenantID string) ([]RateTable, error) {
+	rows, err := r.pool.Query(ctx, `SELECT `+rateTableCols+` FROM rate_tables WHERE tenant_id=$1 ORDER BY id`, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []RateTable
+	for rows.Next() {
+		var t RateTable
+		if err := rows.Scan(&t.ID, &t.TenantID, &t.Name, &t.Active, &t.CreatedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, t)
+	}
+	return out, rows.Err()
+}
+
+func (r *PGRepo) ListRateEntries(ctx context.Context, tableID int) ([]RateEntry, error) {
+	rows, err := r.pool.Query(ctx, `SELECT `+rateEntryCols+` FROM rate_entries WHERE table_id=$1 ORDER BY id`, tableID)
+	if err != nil {
+		return nil, err
+	}
+	return scanRateEntries(rows)
+}
+
+func (r *PGRepo) CreateRateTable(ctx context.Context, t *RateTable) error {
+	return r.pool.QueryRow(ctx, `INSERT INTO rate_tables (tenant_id, name, active)
+		VALUES ($1, $2, $3) RETURNING id, created_at`, t.TenantID, t.Name, t.Active).
+		Scan(&t.ID, &t.CreatedAt)
+}
+
+func (r *PGRepo) CreateRateEntry(ctx context.Context, e *RateEntry) error {
+	var connID any
+	if e.ConnectorID != 0 {
+		connID = e.ConnectorID
+	}
+	return r.pool.QueryRow(ctx, `INSERT INTO rate_entries (table_id, prefix, price, connector_id, valid_from, valid_to)
+		VALUES ($1, $2, $3, $4, $5, $6) RETURNING id`,
+		e.TableID, e.Prefix, e.Price, connID, e.ValidFrom, e.ValidTo).Scan(&e.ID)
+}
+
+func (r *PGRepo) DeleteRateEntry(ctx context.Context, id int) error {
+	_, err := r.pool.Exec(ctx, `DELETE FROM rate_entries WHERE id=$1`, id)
+	return err
+}
+
+const txnCols = `id, tenant_id, message_id, type, amount, result_balance, created_at`
+
+func scanTransactions(rows pgx.Rows) ([]Transaction, error) {
+	defer rows.Close()
+	var out []Transaction
+	for rows.Next() {
+		var tx Transaction
+		if err := rows.Scan(&tx.ID, &tx.TenantID, &tx.MessageID, &tx.Type, &tx.Amount, &tx.ResultBalance, &tx.CreatedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, tx)
+	}
+	return out, rows.Err()
+}
+
+func (r *PGRepo) Debit(ctx context.Context, tenantID, messageID string, amount float64) (float64, error) {
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback(ctx)
+
+	var already int64
+	if err := tx.QueryRow(ctx, `SELECT count(*) FROM transactions
+		WHERE message_id=$1 AND type='debit'`, messageID).Scan(&already); err != nil {
+		return 0, err
+	}
+	if already > 0 {
+		var bal float64
+		if err := tx.QueryRow(ctx, `SELECT balance FROM tenants WHERE id=$1`, tenantID).Scan(&bal); err != nil {
+			return 0, err
+		}
+		return bal, nil
+	}
+
+	var newBal float64
+	if err := tx.QueryRow(ctx, `UPDATE tenants SET balance = balance - $2
+		WHERE id=$1 RETURNING balance`, tenantID, amount).Scan(&newBal); err != nil {
+		return 0, err
+	}
+	if _, err := tx.Exec(ctx, `INSERT INTO transactions (tenant_id, message_id, type, amount, result_balance)
+		VALUES ($1, $2, 'debit', $3, $4)`, tenantID, messageID, amount, newBal); err != nil {
+		return 0, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return 0, err
+	}
+	return newBal, nil
+}
+
+func (r *PGRepo) Credit(ctx context.Context, tenantID string, amount float64) (float64, error) {
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback(ctx)
+
+	var newBal float64
+	if err := tx.QueryRow(ctx, `UPDATE tenants SET balance = balance + $2
+		WHERE id=$1 RETURNING balance`, tenantID, amount).Scan(&newBal); err != nil {
+		return 0, err
+	}
+	if _, err := tx.Exec(ctx, `INSERT INTO transactions (tenant_id, message_id, type, amount, result_balance)
+		VALUES ($1, NULL, 'credit', $2, $3)`, tenantID, amount, newBal); err != nil {
+		return 0, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return 0, err
+	}
+	return newBal, nil
+}
+
+func (r *PGRepo) ListTransactions(ctx context.Context, tenantID string, limit int) ([]Transaction, error) {
+	if limit <= 0 || limit > 500 {
+		limit = 100
+	}
+	rows, err := r.pool.Query(ctx, `SELECT `+txnCols+` FROM transactions
+		WHERE tenant_id=$1 ORDER BY id DESC LIMIT $2`, tenantID, limit)
+	if err != nil {
+		return nil, err
+	}
+	return scanTransactions(rows)
 }
 
 func (r *PGRepo) ListGroups(ctx context.Context) ([]router.Group, error) {

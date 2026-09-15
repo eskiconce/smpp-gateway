@@ -19,6 +19,7 @@ type Message struct {
 	SmscMsgid   string
 	CreatedAt   time.Time
 	UpdatedAt   time.Time
+	Amount      float64
 }
 
 type MessageRepo interface {
@@ -39,6 +40,67 @@ type Webhook struct {
 	Events    []string  `json:"events"`
 	Active    bool      `json:"active"`
 	CreatedAt time.Time `json:"created_at"`
+}
+
+type Tenant struct {
+	ID         string
+	Name       string
+	Status     string
+	RoutingTag string
+	Balance    float64
+	Mode       string
+	ApiKey     string
+	CreatedAt  time.Time
+}
+
+type TenantRepo interface {
+	ListTenants(ctx context.Context) ([]Tenant, error)
+	GetTenant(ctx context.Context, id string) (*Tenant, error)
+	GetTenantByAPIKey(ctx context.Context, apiKey string) (*Tenant, error)
+	CreateTenant(ctx context.Context, t *Tenant) error
+}
+
+type RateTable struct {
+	ID        int
+	TenantID  string
+	Name      string
+	Active    bool
+	CreatedAt time.Time
+}
+
+type RateEntry struct {
+	ID          int
+	TableID     int
+	Prefix      string
+	Price       float64
+	ConnectorID int
+	ValidFrom   *time.Time
+	ValidTo     *time.Time
+}
+
+type RateRepo interface {
+	GetActiveRateTable(ctx context.Context, tenantID string) (*RateTable, error)
+	ListRateTables(ctx context.Context, tenantID string) ([]RateTable, error)
+	ListRateEntries(ctx context.Context, tableID int) ([]RateEntry, error)
+	CreateRateTable(ctx context.Context, t *RateTable) error
+	CreateRateEntry(ctx context.Context, e *RateEntry) error
+	DeleteRateEntry(ctx context.Context, id int) error
+}
+
+type Transaction struct {
+	ID            int64
+	TenantID      string
+	MessageID     string
+	Type          string
+	Amount        float64
+	ResultBalance float64
+	CreatedAt     time.Time
+}
+
+type LedgerRepo interface {
+	Debit(ctx context.Context, tenantID, messageID string, amount float64) (float64, error)
+	Credit(ctx context.Context, tenantID string, amount float64) (float64, error)
+	ListTransactions(ctx context.Context, tenantID string, limit int) ([]Transaction, error)
 }
 
 type WebhookRepo interface {
