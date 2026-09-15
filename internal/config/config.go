@@ -18,6 +18,11 @@ type Config struct {
 	ReconcileTimeout  time.Duration
 	ReconcileInterval time.Duration
 	WebhookTimeout    time.Duration
+	AdminUser         string
+	AdminPassword     string
+	JWTSecret         string
+	JWTTTL            time.Duration
+	MetricsInterval   time.Duration
 }
 
 func Load() (Config, error) {
@@ -54,6 +59,20 @@ func Load() (Config, error) {
 	c.WebhookTimeout, err = time.ParseDuration(envOr("SMG_WEBHOOK_TIMEOUT", "5s"))
 	if err != nil {
 		return Config{}, fmt.Errorf("SMG_WEBHOOK_TIMEOUT invalido: %w", err)
+	}
+	c.JWTSecret = os.Getenv("SMG_JWT_SECRET")
+	c.JWTTTL, err = time.ParseDuration(envOr("SMG_JWT_TTL", "24h"))
+	if err != nil {
+		return Config{}, fmt.Errorf("SMG_JWT_TTL invalido: %w", err)
+	}
+	c.MetricsInterval, err = time.ParseDuration(envOr("SMG_METRICS_INTERVAL", "2s"))
+	if err != nil {
+		return Config{}, fmt.Errorf("SMG_METRICS_INTERVAL invalido: %w", err)
+	}
+	c.AdminUser = envOr("SMG_ADMIN_USER", "admin")
+	c.AdminPassword = os.Getenv("SMG_ADMIN_PASSWORD")
+	if c.Role == "server" && c.JWTSecret == "" {
+		return Config{}, fmt.Errorf("SMG_JWT_SECRET requerido para rol server")
 	}
 	return c, nil
 }

@@ -163,12 +163,14 @@ type GroupRepo interface {
 	CreateGroup(ctx context.Context, name string) (int, error)
 	DeleteGroup(ctx context.Context, id int) error
 	SetGroupMembers(ctx context.Context, groupID int, members []router.GroupMember) error
+	ListGroups(ctx context.Context) ([]router.Group, error)
 }
 
 type RuleRepo interface {
 	CreateRoutingRule(ctx context.Context, r router.Rule) (int, error)
 	DeleteRoutingRule(ctx context.Context, id int) error
 	UpdateRoutingRulePriority(ctx context.Context, id, priority int) error
+	ListRoutingRules(ctx context.Context) ([]router.Rule, error)
 }
 
 type MessageFilter struct {
