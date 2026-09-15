@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"os"
 	"os/signal"
 	"syscall"
@@ -11,6 +12,7 @@ import (
 	"github.com/eskiconce/smpp-gateway/internal/billing"
 	"github.com/eskiconce/smpp-gateway/internal/config"
 	"github.com/eskiconce/smpp-gateway/internal/dlr"
+	"github.com/eskiconce/smpp-gateway/internal/esme"
 	"github.com/eskiconce/smpp-gateway/internal/logger"
 	"github.com/eskiconce/smpp-gateway/internal/pipeline"
 	"github.com/eskiconce/smpp-gateway/internal/queue"
@@ -18,6 +20,7 @@ import (
 	"github.com/eskiconce/smpp-gateway/internal/session"
 	"github.com/eskiconce/smpp-gateway/internal/store"
 	"github.com/eskiconce/smpp-gateway/internal/worker"
+	"github.com/redis/go-redis/v9"
 )
 
 type billingAdapter struct{ s *billing.Service }
@@ -61,6 +64,35 @@ func runServer(parent context.Context, cfg config.Config) {
 	bill := billing.New(pg, pg, pg)
 	pl := pipeline.NewPipeline(pg, rq, rt, pipeline.WithBiller(bill))
 	srv := api.New(cfg, pl, pg)
+
+	// ESME inbound
+	esmeSrv := esme.New(esme.Config{Addr: cfg.SMPPAddr}, pg, pl)
+	go func() {
+		if err := esmeSrv.Run(ctx); err != nil {
+			slog.Warn("esme server", "err", err)
+		}
+	}()
+
+	// ESMEConsumer: DLR publicados en Redis → deliver_sm a sesión ESME
+	rdb := redis.NewClient(&redis.Options{Addr: cfg.RedisURL})
+	defer rdb.Close()
+	handlers := map[string]esme.DeliverFunc{}
+	tenants, _ := pg.ListTenants(ctx)
+	for _, t := range tenants {
+		if t.SmppSystemID == "" {
+			continue
+		}
+		tt := t
+		handlers[tt.ID] = func(source, dest, dlrText string) error {
+			sess := esmeSrv.SessionsByTenant(tt.ID)
+			if len(sess) == 0 {
+				return fmt.Errorf("esme: sin sesion para tenant %s", tt.ID)
+			}
+			return sess[0].Deliver(source, dest, dlrText)
+		}
+	}
+	go esme.NewESMEConsumer(rdb, handlers).Run(ctx)
+
 	if cfg.ReconcileInterval > 0 {
 		rec := dlr.NewReconciler(pg, dlr.NewWebhookNotifier(pg, cfg.WebhookTimeout),
 			cfg.ReconcileTimeout, cfg.ReconcileInterval)
@@ -100,7 +132,13 @@ func runConnector(parent context.Context, cfg config.Config) {
 		os.Exit(1)
 	}
 	defer cache.Close()
-	dlrProc := dlr.NewProcessor(cache, pg, dlr.NewWebhookNotifier(pg, cfg.WebhookTimeout))
+
+	rdb := redis.NewClient(&redis.Options{Addr: cfg.RedisURL})
+	defer rdb.Close()
+	esmePub := esme.NewESMEPublisher(rdb)
+
+	notifier := newDLRNotifier(dlr.NewWebhookNotifier(pg, cfg.WebhookTimeout), esmePub)
+	dlrProc := dlr.NewProcessor(cache, pg, notifier)
 	bill := billing.New(pg, pg, pg)
 
 	w := worker.NewWorker(rq, pg, worker.WithDLR(dlrProc), worker.WithBiller(billingAdapter{bill}))
@@ -126,4 +164,24 @@ func runConnector(parent context.Context, cfg config.Config) {
 
 	log.Info("connector iniciado", "id", connectorID)
 	<-ctx.Done()
+}
+
+type compositeNotifier struct {
+	webhook dlr.Notifier
+	esme    *esme.ESMEPublisher
+}
+
+func newDLRNotifier(webhook dlr.Notifier, esme *esme.ESMEPublisher) dlr.Notifier {
+	return &compositeNotifier{webhook: webhook, esme: esme}
+}
+
+func (c *compositeNotifier) Notify(ctx context.Context, ev dlr.Event) error {
+	_ = c.webhook.Notify(ctx, ev)
+	if ev.SourceChannel == "smpp" {
+		_ = c.esme.Notify(ctx, esme.DLRMessage{
+			TenantID: ev.TenantID, MessageID: ev.MessageID, SmscMsgid: ev.SmscMsgid,
+			Msisdn: ev.Msisdn, State: ev.State, SourceChannel: ev.SourceChannel,
+		})
+	}
+	return nil
 }
