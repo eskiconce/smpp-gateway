@@ -1,0 +1,15 @@
+[Unit]
+Description=smppgw connector %i
+After=network.target postgresql.service redis-server.service
+
+[Service]
+User=smpp
+Group=smpp
+EnvironmentFile=/etc/smppgw/connector.env
+ExecStart=/usr/local/bin/smppgw connector
+Restart=on-failure
+RestartSec=3
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target

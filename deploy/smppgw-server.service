@@ -1,0 +1,16 @@
+[Unit]
+Description=smppgw server (API + SMPP inbound)
+After=network.target postgresql.service redis-server.service
+Wants=network.target
+
+[Service]
+User=smpp
+Group=smpp
+EnvironmentFile=/etc/smppgw/server.env
+ExecStart=/usr/local/bin/smppgw server
+Restart=on-failure
+RestartSec=3
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target
