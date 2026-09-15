@@ -27,14 +27,37 @@ type Outgoing struct {
 	DataCoding int
 }
 
-type Pipeline struct {
-	repo store.MessageRepo
-	q    queue.Queue
-	r    Router
+type Biller interface {
+	Price(ctx context.Context, tenantID string, connectorID int, msisdn string, segments int) (float64, error)
+	Reserve(ctx context.Context, tenantID string, amount float64) error
 }
 
-func NewPipeline(repo store.MessageRepo, q queue.Queue, r Router) *Pipeline {
-	return &Pipeline{repo: repo, q: q, r: r}
+type nilBiller struct{}
+
+func (nilBiller) Price(context.Context, string, int, string, int) (float64, error) { return 0, nil }
+func (nilBiller) Reserve(context.Context, string, float64) error                    { return nil }
+
+var NilBiller Biller = nilBiller{}
+
+type Option func(*Pipeline)
+
+func WithBiller(b Biller) Option {
+	return func(p *Pipeline) { p.biller = b }
+}
+
+type Pipeline struct {
+	repo   store.MessageRepo
+	q      queue.Queue
+	r      Router
+	biller Biller
+}
+
+func NewPipeline(repo store.MessageRepo, q queue.Queue, r Router, opts ...Option) *Pipeline {
+	p := &Pipeline{repo: repo, q: q, r: r, biller: NilBiller}
+	for _, o := range opts {
+		o(p)
+	}
+	return p
 }
 
 var tagRe = regexp.MustCompile(`\[[A-Za-z0-9_]+\]`)
@@ -74,11 +97,23 @@ func (p *Pipeline) Submit(ctx context.Context, out Outgoing) (string, int, error
 		return "", 0, router.ErrNoRoute
 	}
 
+	amount := 0.0
+	if _, ok := p.biller.(nilBiller); !ok {
+		amount, err = p.biller.Price(ctx, out.TenantID, res.Connectors[0], out.Msisdn, segments)
+		if err != nil {
+			return "", 0, err
+		}
+		if err := p.biller.Reserve(ctx, out.TenantID, amount); err != nil {
+			return "", 0, err
+		}
+	}
+
 	msgID := uuid.NewString()
 	msg := &store.Message{
 		ID: msgID, TenantID: out.TenantID, SourceAddr: out.SourceAddr,
 		Msisdn: out.Msisdn, Text: text, Segments: segments,
 		ConnectorID: res.Connectors[0], RouteID: res.RuleID, State: "buffered", CreatedAt: time.Now(),
+		Amount: amount,
 	}
 	if err := p.repo.CreateMessage(ctx, msg); err != nil {
 		return "", 0, err
@@ -88,7 +123,7 @@ func (p *Pipeline) Submit(ctx context.Context, out Outgoing) (string, int, error
 		ID: msgID, TenantID: out.TenantID, ConnectorID: res.Connectors[0],
 		Priority: out.Priority, DataCoding: out.DataCoding,
 		Msisdn: out.Msisdn, SourceAddr: out.SourceAddr, Text: text,
-		Candidates: res.Connectors, Try: 0,
+		Candidates: res.Connectors, Try: 0, Amount: amount,
 	}
 	if err := p.q.Enqueue(ctx, queue.Key(res.Connectors[0], out.Priority), item); err != nil {
 		return "", 0, err
