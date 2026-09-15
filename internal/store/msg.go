@@ -43,14 +43,14 @@ type Webhook struct {
 }
 
 type Tenant struct {
-	ID         string
-	Name       string
-	Status     string
-	RoutingTag string
-	Balance    float64
-	Mode       string
-	ApiKey     string
-	CreatedAt  time.Time
+	ID         string    `json:"id"`
+	Name       string    `json:"name"`
+	Status     string    `json:"status"`
+	RoutingTag string    `json:"routing_tag"`
+	Balance    float64   `json:"balance"`
+	Mode       string    `json:"mode"`
+	ApiKey     string    `json:"api_key"`
+	CreatedAt  time.Time `json:"created_at"`
 }
 
 type TenantRepo interface {
@@ -61,21 +61,21 @@ type TenantRepo interface {
 }
 
 type RateTable struct {
-	ID        int
-	TenantID  string
-	Name      string
-	Active    bool
-	CreatedAt time.Time
+	ID        int       `json:"id"`
+	TenantID  string    `json:"tenant_id"`
+	Name      string    `json:"name"`
+	Active    bool      `json:"active"`
+	CreatedAt time.Time `json:"created_at"`
 }
 
 type RateEntry struct {
-	ID          int
-	TableID     int
-	Prefix      string
-	Price       float64
-	ConnectorID int
-	ValidFrom   *time.Time
-	ValidTo     *time.Time
+	ID          int        `json:"id"`
+	TableID     int        `json:"table_id"`
+	Prefix      string     `json:"prefix"`
+	Price       float64    `json:"price"`
+	ConnectorID int        `json:"connector_id"`
+	ValidFrom   *time.Time `json:"valid_from"`
+	ValidTo     *time.Time `json:"valid_to"`
 }
 
 type RateRepo interface {
@@ -88,13 +88,13 @@ type RateRepo interface {
 }
 
 type Transaction struct {
-	ID            int64
-	TenantID      string
-	MessageID     string
-	Type          string
-	Amount        float64
-	ResultBalance float64
-	CreatedAt     time.Time
+	ID            int64     `json:"id"`
+	TenantID      string    `json:"tenant_id"`
+	MessageID     string    `json:"message_id"`
+	Type          string    `json:"type"`
+	Amount        float64   `json:"amount"`
+	ResultBalance float64   `json:"result_balance"`
+	CreatedAt     time.Time `json:"created_at"`
 }
 
 type LedgerRepo interface {
