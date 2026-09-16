@@ -101,6 +101,12 @@ El e2e (`e2e/`) cubre:
 
 ## Documentación del proyecto
 
+### Manual de usuario
+
+**Manual completo en español**: [`docs/MANUAL_DE_USO.md`](docs/MANUAL_DE_USO.md)
+
+Guía de instalación, configuración, uso del panel admin, referencia de la API HTTP, troubleshooting y apéndice de códigos SMPP.
+
 ### Documento general de diseño
 
 **Especificación completa**: [`docs/superpowers/specs/2026-09-12-smpp-gateway-design.md`](docs/superpowers/specs/2026-09-12-smpp-gateway-design.md)
