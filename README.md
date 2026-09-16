@@ -107,6 +107,12 @@ El e2e (`e2e/`) cubre:
 
 Guía de instalación, configuración, uso del panel admin, referencia de la API HTTP, troubleshooting y apéndice de códigos SMPP.
 
+### Flujos de mensajes
+
+**Diagramas gráficos**: [`docs/FLUJOS_DE_MENSAJES.md`](docs/FLUJOS_DE_MENSAJES.md)
+
+11 diagramas Mermaid: envío HTTP end-to-end, recepción DLR, reconciliación, conexión SMSC, ESME entrante, routing con grupos/fallback, billing, estados del mensaje, arquitectura de componentes y secuencia de deploy.
+
 ### Documento general de diseño
 
 **Especificación completa**: [`docs/superpowers/specs/2026-09-12-smpp-gateway-design.md`](docs/superpowers/specs/2026-09-12-smpp-gateway-design.md)
